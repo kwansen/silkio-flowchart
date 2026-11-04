@@ -686,43 +686,54 @@ export class FlowChart {
     }
   }
 
-  // 节点拖拽对齐：取拖拽节点的左/中/右、上/中/下与其他节点对应边的最小差值，
-  // 阈值内则平移吸附，并记录参考线位置；无对齐时清除参考线
+  // 节点拖拽对齐：第一遍取拖拽节点的左/中/右、上/中/下与其他节点对应边的最小
+  // 差值做吸附平移；第二遍收集吸附后所有阈值内已对齐的基准（等宽节点上下对齐时
+  // 左右两条边同时产生参考线，多层堆叠时各层边均产生参考线）
   private applySnap(shape: Shape) {
     const scale = this.app.renderer.viewport.scale
     const tol = SNAP_TOLERANCE / scale
-    const xs = [shape.x, shape.x + shape.width / 2, shape.x + shape.width]
-    const ys = [shape.y, shape.y + shape.height / 2, shape.y + shape.height]
-    let bestX: { d: number; shift: number; pos: number } | null = null
-    let bestY: { d: number; shift: number; pos: number } | null = null
+    const xs = () => [shape.x, shape.x + shape.width / 2, shape.x + shape.width]
+    const ys = () => [shape.y, shape.y + shape.height / 2, shape.y + shape.height]
+    let bestX: { d: number; shift: number } | null = null
+    let bestY: { d: number; shift: number } | null = null
     for (const other of this.shapes.values()) {
       if (other === shape) continue
       const oxs = [other.x, other.x + other.width / 2, other.x + other.width]
       const oys = [other.y, other.y + other.height / 2, other.y + other.height]
-      for (const x of xs) {
+      for (const x of xs()) {
         for (const ox of oxs) {
           const d = Math.abs(ox - x)
-          if (d <= tol && (!bestX || d < bestX.d)) bestX = { d, shift: ox - x, pos: ox }
+          if (d <= tol && (!bestX || d < bestX.d)) bestX = { d, shift: ox - x }
         }
       }
-      for (const y of ys) {
+      for (const y of ys()) {
         for (const oy of oys) {
           const d = Math.abs(oy - y)
-          if (d <= tol && (!bestY || d < bestY.d)) bestY = { d, shift: oy - y, pos: oy }
+          if (d <= tol && (!bestY || d < bestY.d)) bestY = { d, shift: oy - y }
         }
       }
     }
-    const v: number[] = []
-    const h: number[] = []
-    if (bestX) {
-      shape.x += bestX.shift
-      v.push(bestX.pos)
+    if (bestX) shape.x += bestX.shift
+    if (bestY) shape.y += bestY.shift
+    // 吸附后收集所有已对齐基准（去重）
+    const v = new Set<number>()
+    const h = new Set<number>()
+    for (const other of this.shapes.values()) {
+      if (other === shape) continue
+      const oxs = [other.x, other.x + other.width / 2, other.x + other.width]
+      const oys = [other.y, other.y + other.height / 2, other.y + other.height]
+      for (const x of xs()) {
+        for (const ox of oxs) {
+          if (Math.abs(ox - x) <= tol) v.add(ox)
+        }
+      }
+      for (const y of ys()) {
+        for (const oy of oys) {
+          if (Math.abs(oy - y) <= tol) h.add(oy)
+        }
+      }
     }
-    if (bestY) {
-      shape.y += bestY.shift
-      h.push(bestY.pos)
-    }
-    this.guides = v.length || h.length ? { v, h } : null
+    this.guides = v.size || h.size ? { v: [...v], h: [...h] } : null
   }
 
   // 按手柄方位应用缩放：对侧边/对角锚定，尺寸钳制到 MIN_SIZE
