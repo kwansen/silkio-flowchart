@@ -190,8 +190,8 @@ export class FlowChart {
         shape: selShape,
         scale,
         ports: selShape ? dirs.map(dir => this.portPos(selShape, dir, scale)) : [],
-        // 激活连线的首尾端点手柄
-        edgeHandles: selEdge && selEdge.points.length >= 2
+        // 激活连线的首尾端点手柄（端点拖拽期间隐藏）
+        edgeHandles: selEdge && !selEdge.dragWhich && selEdge.points.length >= 2
           ? [selEdge.points[0], selEdge.points[selEdge.points.length - 1]]
           : [],
         link: this.linkTarget

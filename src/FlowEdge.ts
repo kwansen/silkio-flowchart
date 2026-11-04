@@ -78,7 +78,8 @@ export class FlowEdge extends Edge {
   render(ctx: CanvasRenderingContext2D) {
     this.update()
     const pts = this.route()
-    const color = this.selected ? SELECT_COLOR : this.color
+    // 拖拽端点期间不显示激活高亮，保持常态线色
+    const color = this.selected && !this.dragWhich ? SELECT_COLOR : this.color
     // 线体末端回缩一个箭头长度再绘制，避免线头从三角箭头下方露出
     renderOrthoPolyline(ctx, trimEdgeEnd(pts), color, this.lineWidth, this.cornerRadius)
     drawEdgeArrow(ctx, pts, color)
