@@ -595,7 +595,7 @@ export class FlowChart {
       this.applyResize(s, p.x - s.start.x, p.y - s.start.y)
       this.app.render()
     } else if (s.kind === 'link') {
-      this.updateLinkTarget(p, [s.source])
+      this.updateLinkTarget(p)
       // 吸附时预览以手柄的具体位置与端口方向渲染；自由拖拽时按光标相对
       // 出口端口的位置确定虚拟进入方向
       if (this.linkTarget && this.linkSnap) {
@@ -608,9 +608,9 @@ export class FlowChart {
       this.app.render()
     } else if (s.kind === 'edge-move') {
       // 原连线被拖端跟随光标：吸附时落在目标手柄上，自由拖拽时按出口方向
-      // 与光标位置确定虚拟进入方向。两端节点同样可吸附（便于调整接入边），
-      // 仅排除被拖端对侧的节点（重接到它将形成自环）
-      this.updateLinkTarget(p, [s.which === 'from' ? s.edge.toNode : s.edge.fromNode])
+      // 与光标位置确定虚拟进入方向。任意节点均可吸附（含本连线两端节点，
+      // 可调整接入边或形成自环）
+      this.updateLinkTarget(p)
       if (this.linkTarget && this.linkSnap) {
         s.edge.dragPoint = this.linkTarget.portAt(this.linkSnap)
         s.edge.dragDir = this.linkSnap
@@ -625,23 +625,23 @@ export class FlowChart {
   }
 
   // 自由拖拽时预览的虚拟进入方向：与出口方向同轴，按光标相对出口端口的位置
-  // 选边——光标在出口外法向一侧时同侧进入（如从下方出来、光标在下方则按
-  // 从下面进入），越过出口端口时对侧进入
+  // 选边——光标在出口外法向一侧时沿行进方向顺势进入对侧（如从下方出来、
+  // 光标在下方则按从上面进入，形成下、右、下的顺向路径），越过出口端口时同侧进入
   private previewToDir(exitDir: PortDir, exitPort: { x: number; y: number }, p: { x: number; y: number }): PortDir {
     const v = PORT_DIR_VEC[exitDir]
     const proj = (p.x - exitPort.x) * v.x + (p.y - exitPort.y) * v.y
-    return proj > 0 ? exitDir : OPPOSITE_DIR[exitDir]
+    return proj > 0 ? OPPOSITE_DIR[exitDir] : exitDir
   }
 
   // 连线拖拽中更新吸附目标：光标进入某节点包围盒外扩 LINK_SNAP_MARGIN 范围时，
-  // 该节点成为目标（浮出对接手柄），并吸附到距光标最近的端口；exclude 为排除的节点
-  private updateLinkTarget(p: { x: number; y: number }, exclude: Shape[]) {
+  // 该节点成为目标（浮出对接手柄），并吸附到距光标最近的端口（任意节点均可，
+  // 包括连线/预览自身的节点——支持改接边与自环）
+  private updateLinkTarget(p: { x: number; y: number }) {
     const scale = this.app.renderer.viewport.scale
     const m = LINK_SNAP_MARGIN / scale
     this.linkTarget = null
     this.linkSnap = null
     for (const shape of this.shapes.values()) {
-      if (exclude.includes(shape)) continue
       if (p.x < shape.x - m || p.x > shape.x + shape.width + m || p.y < shape.y - m || p.y > shape.y + shape.height + m) continue
       this.linkTarget = shape
       let best = Infinity
@@ -693,16 +693,17 @@ export class FlowChart {
     } else if (s.kind === 'blank') {
       this.select(null)
     } else if (s.kind === 'edge-move') {
-      // 端点重接结束：退出拖拽态；吸附目标按其端口重接，否则按落点命中节点
-      // 重接（主导方向自动选边）；无目标则连线弹回原状
+      // 端点重接结束：退出拖拽态；吸附目标按其端口重接（任意节点，含本连线
+      // 两端节点）；未吸附时按落点命中节点重接（主导方向自动选边），纯点击
+      // 落回被拖端原节点时视为无操作，连线保持原状
       s.edge.dragWhich = null
       const target = this.linkTarget
       const snap = this.linkSnap
       this.linkTarget = null
       this.linkSnap = null
       const hit = target ?? this.hitShape(this.toWorld(e))
-      const selfLoop = s.which === 'from' ? s.edge.toNode : s.edge.fromNode
-      if (hit && hit !== selfLoop) {
+      const cur = s.which === 'from' ? s.edge.fromNode : s.edge.toNode
+      if (hit && !(hit === cur && !target)) {
         s.edge.reattachEnd(s.which, hit, target && snap ? snap : undefined)
         this.onChange?.('reconnect')
       }
