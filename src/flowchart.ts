@@ -221,7 +221,12 @@ export class FlowChart {
         height: s.height,
         text: s.text.text,
       })),
-      edges: this.edges.map(e => ({ from: e.fromNode.id as string, to: e.toNode.id as string })),
+      edges: this.edges.map(e => ({
+        from: e.fromNode.id as string,
+        to: e.toNode.id as string,
+        fromDir: e.fromDir,
+        toDir: e.toDir,
+      })),
     }
   }
 
@@ -248,7 +253,7 @@ export class FlowChart {
     for (const e of data.edges) {
       const from = this.shapes.get(e.from)
       const to = this.shapes.get(e.to)
-      if (from && to) this.addEdgeBetween(from, to, false)
+      if (from && to) this.addEdgeBetween(from, to, false, { from: e.fromDir, to: e.toDir })
     }
     this.app.render()
   }
