@@ -530,6 +530,8 @@ export class FlowChart {
         else this.app.children.splice(idx, 0, preview)
         this.session = { kind: 'link', source: sel, sourceDir: dir, preview }
         this.options.canvas.style.cursor = 'crosshair'
+        // 拖拽开始即取消形状激活，选中框与手柄不再显示
+        this.select(null)
         this.app.render()
         return
       }
@@ -710,6 +712,7 @@ export class FlowChart {
       this.app.render()
     } else {
       // 连线拖拽结束：移除预览；吸附中的目标按其端口固定创建连线，否则按落点命中建边
+      // （源形状在拖拽开始时已取消激活）
       this.removeTop(s.preview)
       const target = this.linkTarget
       const snap = this.linkSnap
