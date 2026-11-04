@@ -26,6 +26,10 @@ const PORT_OFFSET = 12     // 端口圆点圆心相对边中点向外的偏移�
 // 连线拖拽吸附：光标进入目标节点包围盒外扩该范围时，目标节点浮出对接手柄
 const LINK_SNAP_MARGIN = 16 // 吸附感应范围（屏幕像素）
 
+// 节点拖拽对齐：左/中/右与上/中/下接近其他节点的对应边时吸附，并绘制对齐参考线
+const SNAP_TOLERANCE = 3      // 对齐吸附阈值（屏幕像素），过大会产生粘滞感
+const ALIGN_COLOR = '#f43f5e' // 对齐参考线颜色
+
 // 缩放手柄方位：四角 + 四边
 type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
 
@@ -60,12 +64,14 @@ class SelectionOverlay extends Node {
     edgeHandles: Array<{ x: number; y: number }>
     // 连线拖拽中的目标节点：ports 为其四个对接手柄，active 为吸附中的手柄
     link: { ports: Array<{ x: number; y: number }>; active: { x: number; y: number } | null } | null
+    // 节点拖拽对齐参考线：v 为竖线 x 坐标、h 为横线 y 坐标（世界坐标）
+    guides: { v: number[]; h: number[] } | null
   }) {
     super()
   }
 
   render(ctx: CanvasRenderingContext2D) {
-    const { shape, scale, ports, edgeHandles, link } = this.getState()
+    const { shape, scale, ports, edgeHandles, link, guides } = this.getState()
     const k = 1 / scale
     ctx.save()
     if (shape) {
@@ -101,6 +107,23 @@ class SelectionOverlay extends Node {
     }
     // 连线拖拽目标：浮出对接手柄，吸附中的手柄实心高亮
     if (link) this.drawPorts(ctx, link.ports, k, link.active)
+    // 对齐参考线：贯穿画布的虚线
+    if (guides && (guides.v.length || guides.h.length)) {
+      ctx.strokeStyle = ALIGN_COLOR
+      ctx.lineWidth = 1 * k
+      ctx.setLineDash([4 * k, 4 * k])
+      ctx.beginPath()
+      for (const x of guides.v) {
+        ctx.moveTo(x, -10000)
+        ctx.lineTo(x, 10000)
+      }
+      for (const y of guides.h) {
+        ctx.moveTo(-10000, y)
+        ctx.lineTo(10000, y)
+      }
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
     ctx.restore()
   }
 
@@ -158,6 +181,8 @@ export class FlowChart {
   // 连线拖拽吸附状态：接近中的目标节点与吸附中的端口方向
   private linkTarget: Shape | null = null
   private linkSnap: PortDir | null = null
+  // 节点拖拽对齐参考线（applySnap 更新，拖拽结束清除）
+  private guides: { v: number[]; h: number[] } | null = null
   private onChange?: (type: FlowChangeType) => void
   private cleanups: Array<() => void> = []
 
@@ -201,6 +226,7 @@ export class FlowChart {
               active: this.linkSnap ? this.linkTarget.portAt(this.linkSnap) : null,
             }
           : null,
+        guides: this.guides,
       }
     })
     this.app.add(this.overlay)
@@ -592,6 +618,7 @@ export class FlowChart {
       s.shape.x = s.origin.x + (p.x - s.start.x)
       s.shape.y = s.origin.y + (p.y - s.start.y)
       s.moved = true
+      this.applySnap(s.shape)
       this.app.render()
     } else if (s.kind === 'resize') {
       this.applyResize(s, p.x - s.start.x, p.y - s.start.y)
@@ -659,6 +686,45 @@ export class FlowChart {
     }
   }
 
+  // 节点拖拽对齐：取拖拽节点的左/中/右、上/中/下与其他节点对应边的最小差值，
+  // 阈值内则平移吸附，并记录参考线位置；无对齐时清除参考线
+  private applySnap(shape: Shape) {
+    const scale = this.app.renderer.viewport.scale
+    const tol = SNAP_TOLERANCE / scale
+    const xs = [shape.x, shape.x + shape.width / 2, shape.x + shape.width]
+    const ys = [shape.y, shape.y + shape.height / 2, shape.y + shape.height]
+    let bestX: { d: number; shift: number; pos: number } | null = null
+    let bestY: { d: number; shift: number; pos: number } | null = null
+    for (const other of this.shapes.values()) {
+      if (other === shape) continue
+      const oxs = [other.x, other.x + other.width / 2, other.x + other.width]
+      const oys = [other.y, other.y + other.height / 2, other.y + other.height]
+      for (const x of xs) {
+        for (const ox of oxs) {
+          const d = Math.abs(ox - x)
+          if (d <= tol && (!bestX || d < bestX.d)) bestX = { d, shift: ox - x, pos: ox }
+        }
+      }
+      for (const y of ys) {
+        for (const oy of oys) {
+          const d = Math.abs(oy - y)
+          if (d <= tol && (!bestY || d < bestY.d)) bestY = { d, shift: oy - y, pos: oy }
+        }
+      }
+    }
+    const v: number[] = []
+    const h: number[] = []
+    if (bestX) {
+      shape.x += bestX.shift
+      v.push(bestX.pos)
+    }
+    if (bestY) {
+      shape.y += bestY.shift
+      h.push(bestY.pos)
+    }
+    this.guides = v.length || h.length ? { v, h } : null
+  }
+
   // 按手柄方位应用缩放：对侧边/对角锚定，尺寸钳制到 MIN_SIZE
   private applyResize(s: Extract<Session, { kind: 'resize' }>, dx: number, dy: number) {
     const o = s.origin
@@ -686,6 +752,7 @@ export class FlowChart {
     this.session = null
     this.options.canvas.style.cursor = ''
     if (s.kind === 'move') {
+      this.guides = null
       if (s.moved) this.onChange?.('move')
     } else if (s.kind === 'resize') {
       const o = s.origin
