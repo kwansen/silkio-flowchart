@@ -37,6 +37,9 @@ interface SpacingGuide { x1: number; y1: number; x2: number; y2: number; value: 
 // 缩放手柄方位：四角 + 四边
 type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
 
+// 矩形包围盒（世界坐标）：框选矩形与多选组合 bounds
+type Bounds = { x: number; y: number; width: number; height: number }
+
 // 连线拖拽预览：与正式连线同款式的正交折线 + 箭头（from 为固定端端口及其方向，
 // to 为光标或吸附端端口；toDir 随光标相对出口端口的位置实时变化）
 class LinkPreview extends Node {
@@ -71,14 +74,31 @@ class SelectionOverlay extends Node {
     // 节点拖拽对齐参考线：v 为竖线 x 坐标、h 为横线 y 坐标（世界坐标），
     // spacing 为等间距测量线段
     guides: { v: number[]; h: number[]; spacing: SpacingGuide[] } | null
+    // 框选矩形（拖拽中）或多选组合 bounds（落定后），样式与单选框一致
+    marquee: Bounds | null
   }) {
     super()
   }
 
   render(ctx: CanvasRenderingContext2D) {
-    const { shape, scale, ports, edgeHandles, link, guides } = this.getState()
+    const { shape, scale, ports, edgeHandles, link, guides, marquee } = this.getState()
     const k = 1 / scale
     ctx.save()
+    // 框选框 / 多选组合框：与单选框同样式（边框 + 四角手柄），无连线端口
+    if (marquee) {
+      ctx.strokeStyle = SELECT_COLOR
+      ctx.lineWidth = 1.5 * k
+      ctx.strokeRect(marquee.x, marquee.y, marquee.width, marquee.height)
+      const s = HANDLE_SIZE * k
+      const { x, y, width: w, height: h } = marquee
+      for (const [cx, cy] of [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]) {
+        ctx.beginPath()
+        ctx.rect(cx - s / 2, cy - s / 2, s, s)
+        ctx.fillStyle = '#ffffff'
+        ctx.fill()
+        ctx.stroke()
+      }
+    }
     if (shape) {
       const { x, y, width: w, height: h } = shape
       // bounds 边框
@@ -207,11 +227,13 @@ export interface FlowChartOptions {
   onChange?: (type: FlowChangeType) => void
 }
 
-// 交互会话：节点拖拽移动 / 拖拽缩放 / 空白按下（抬起时取消选中）/ 端口拖拽连线 / 连线端点重接
+// 交互会话：节点拖拽移动（多选时为组合移动）/ 拖拽缩放 / 空白按下（可拖出框选）
+// / 框选组合缩放 / 端口拖拽连线 / 连线端点重接
 type Session =
-  | { kind: 'move'; shape: Shape; start: { x: number; y: number }; origin: { x: number; y: number }; moved: boolean }
-  | { kind: 'resize'; shape: Shape; handle: ResizeHandle; start: { x: number; y: number }; origin: { x: number; y: number; width: number; height: number } }
-  | { kind: 'blank'; start: { x: number; y: number } }
+  | { kind: 'move'; shape: Shape; start: { x: number; y: number }; origin: { x: number; y: number }; moved: boolean; group: Array<{ shape: Shape; x: number; y: number }> | null }
+  | { kind: 'resize'; shape: Shape; handle: ResizeHandle; start: { x: number; y: number }; origin: Bounds }
+  | { kind: 'blank'; start: { x: number; y: number }; rect: Bounds | null }
+  | { kind: 'group-resize'; handle: ResizeHandle; start: { x: number; y: number }; origin: Bounds; origins: Array<{ shape: Shape; x: number; y: number; width: number; height: number }> }
   | { kind: 'link'; source: Shape; sourceDir: PortDir; preview: LinkPreview }
   | { kind: 'edge-move'; edge: FlowEdge; which: 'from' | 'to' }
 
@@ -224,6 +246,8 @@ export class FlowChart {
   private edges: FlowEdge[] = []
   // 当前选中：形状或连线
   private selection: Shape | FlowEdge | null = null
+  // 多选（框选）：非空时为组合选中态，selection 置空
+  private multi: Shape[] = []
   private editing: Shape | null = null
   private session: Session | null = null
   private overlay: SelectionOverlay
@@ -276,6 +300,12 @@ export class FlowChart {
             }
           : null,
         guides: this.guides,
+        // 框选拖拽中返回矩形，落定后返回多选组合 bounds
+        marquee: (() => {
+          const s = this.session
+          if (s && s.kind === 'blank') return s.rect
+          return this.multiBounds
+        })(),
       }
     })
     this.app.add(this.overlay)
@@ -298,8 +328,16 @@ export class FlowChart {
     return shape.id as string
   }
 
-  // 删除当前选中（形状连同其关联连线，或单条连线）
+  // 删除当前选中（形状连同其关联连线，或单条连线；多选时删除全部成员）
   deleteSelected() {
+    if (this.multi.length) {
+      const list = [...this.multi]
+      this.multi = []
+      list.forEach(s => this.removeShape(s))
+      this.app.render()
+      this.onChange?.('delete')
+      return
+    }
     const sel = this.selection
     if (!sel) return
     if (sel instanceof FlowEdge) {
@@ -409,7 +447,10 @@ export class FlowChart {
   }
 
   private select(sel: Shape | FlowEdge | null) {
-    if (this.selection === sel) return
+    // 多选与单选互斥：任何单选变化都清空组合选中
+    const hadMulti = this.multi.length > 0
+    this.multi = []
+    if (this.selection === sel && !hadMulti) return
     if (this.selection) this.selection.selected = false
     this.selection = sel
     if (sel) {
@@ -418,6 +459,22 @@ export class FlowChart {
       if (sel instanceof FlowEdge) this.raiseEdgeTop(sel)
     }
     this.app.render()
+  }
+
+  // 多选组合的包围盒（少于 2 个形状时视为无组合）
+  private get multiBounds(): Bounds | null {
+    if (this.multi.length < 2) return null
+    let x0 = Infinity
+    let y0 = Infinity
+    let x1 = -Infinity
+    let y1 = -Infinity
+    for (const s of this.multi) {
+      x0 = Math.min(x0, s.x)
+      y0 = Math.min(y0, s.y)
+      x1 = Math.max(x1, s.x + s.width)
+      y1 = Math.max(y1, s.y + s.height)
+    }
+    return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
   }
 
   // 把连线移到连线层最上（保持在形状层/覆盖层之下）
@@ -530,10 +587,10 @@ export class FlowChart {
     return null
   }
 
-  // 四角手柄命中（屏幕像素半径换算到世界坐标）
-  private cornerHit(shape: Shape, p: { x: number; y: number }, scale: number): 'nw' | 'ne' | 'se' | 'sw' | null {
+  // 四角手柄命中（屏幕像素半径换算到世界坐标），形状与框选框通用
+  private cornerHit(b: Bounds, p: { x: number; y: number }, scale: number): 'nw' | 'ne' | 'se' | 'sw' | null {
     const r = HANDLE_HIT / scale
-    const { x, y, width: w, height: h } = shape
+    const { x, y, width: w, height: h } = b
     const corners: Array<['nw' | 'ne' | 'se' | 'sw', number, number]> = [
       ['nw', x, y], ['ne', x + w, y], ['se', x + w, y + h], ['sw', x, y + h],
     ]
@@ -545,11 +602,11 @@ export class FlowChart {
 
   // bounds 边线命中（四边拖拽缩放）：距边线 EDGE_TOLERANCE 内命中；
   // 四角让位给角手柄、四边中点让位给连线端口（连接与缩放互不干扰）
-  private edgeHit(shape: Shape, p: { x: number; y: number }, scale: number): 'n' | 'e' | 's' | 'w' | null {
+  private edgeHit(b: Bounds, p: { x: number; y: number }, scale: number): 'n' | 'e' | 's' | 'w' | null {
     const tol = EDGE_TOLERANCE / scale
     const nearCorner = HANDLE_HIT / scale + 2
     const nearPort = PORT_HIT_RADIUS
-    const { x, y, width: w, height: h } = shape
+    const { x, y, width: w, height: h } = b
     const sides: Array<['n' | 'e' | 's' | 'w', { x: number; y: number }, { x: number; y: number }]> = [
       ['n', { x, y }, { x: x + w, y }],
       ['e', { x: x + w, y }, { x: x + w, y: y + h }],
@@ -633,10 +690,37 @@ export class FlowChart {
         return
       }
     }
+    // 多选组合框的手柄/边线：整体缩放（优先于命中形状）
+    const mb = this.multiBounds
+    if (mb) {
+      const handle = this.cornerHit(mb, p, scale) ?? this.edgeHit(mb, p, scale)
+      if (handle) {
+        this.session = {
+          kind: 'group-resize',
+          handle,
+          start: p,
+          origin: mb,
+          origins: this.multi.map(s => ({ shape: s, x: s.x, y: s.y, width: s.width, height: s.height })),
+        }
+        return
+      }
+    }
     const hit = this.hitShape(p)
     if (hit) {
-      this.select(hit)
-      this.session = { kind: 'move', shape: hit, start: p, origin: { x: hit.x, y: hit.y }, moved: false }
+      if (this.multi.includes(hit)) {
+        // 组内形状：整体移动，保持多选（单击不动则抬起时塌缩为单选）
+        this.session = {
+          kind: 'move',
+          shape: hit,
+          start: p,
+          origin: { x: hit.x, y: hit.y },
+          moved: false,
+          group: this.multi.filter(s => s !== hit).map(s => ({ shape: s, x: s.x, y: s.y })),
+        }
+      } else {
+        this.select(hit)
+        this.session = { kind: 'move', shape: hit, start: p, origin: { x: hit.x, y: hit.y }, moved: false, group: null }
+      }
       return
     }
     // 形状未命中时尝试命中连线（形状层在上，优先选中形状）
@@ -646,7 +730,10 @@ export class FlowChart {
       this.app.render()
       return
     }
-    this.session = { kind: 'blank', start: p }
+    // 空白按下：立即取消选中，可拖出框选矩形
+    this.select(null)
+    this.options.canvas.style.cursor = 'crosshair'
+    this.session = { kind: 'blank', start: p, rect: null }
   }
 
   private onMove(e: MouseEvent) {
@@ -655,7 +742,18 @@ export class FlowChart {
     if (!s) {
       const p = this.toWorld(e)
       const scale = this.app.renderer.viewport.scale
-      let cursor = this.selShape ? this.hoverCursor(this.selShape, p, scale) : null
+      let cursor: string | null = null
+      // 多选组合框的手柄/边线优先给缩放光标
+      const mb = this.multiBounds
+      if (mb) {
+        const corner = this.cornerHit(mb, p, scale)
+        if (corner) cursor = corner === 'nw' || corner === 'se' ? 'nwse-resize' : 'nesw-resize'
+        else {
+          const side = this.edgeHit(mb, p, scale)
+          if (side) cursor = side === 'n' || side === 's' ? 'ns-resize' : 'ew-resize'
+        }
+      }
+      if (cursor === null) cursor = this.selShape ? this.hoverCursor(this.selShape, p, scale) : null
       if (cursor === null && this.selection instanceof FlowEdge && this.edgeHandleHit(this.selection, p, scale)) cursor = 'move'
       if (cursor === null) cursor = this.hitShape(p) ? 'move' : null
       if (cursor === null) cursor = this.hitEdge(p, scale) ? 'pointer' : null
@@ -668,9 +766,30 @@ export class FlowChart {
       s.shape.y = s.origin.y + (p.y - s.start.y)
       s.moved = true
       this.applySnap(s.shape)
+      // 组合移动：其余成员跟随主形状的吸附后位移
+      if (s.group) {
+        const dx = s.shape.x - s.origin.x
+        const dy = s.shape.y - s.origin.y
+        for (const g of s.group) {
+          g.shape.x = g.x + dx
+          g.shape.y = g.y + dy
+        }
+      }
       this.app.render()
     } else if (s.kind === 'resize') {
       this.applyResize(s, p.x - s.start.x, p.y - s.start.y)
+      this.app.render()
+    } else if (s.kind === 'group-resize') {
+      this.applyGroupResize(s, p.x - s.start.x, p.y - s.start.y)
+      this.app.render()
+    } else if (s.kind === 'blank') {
+      // 框选矩形：拖动超过 3 屏幕像素才显示，避免与单击取消选中混淆
+      const k = 3 / this.app.renderer.viewport.scale
+      const w = Math.abs(p.x - s.start.x)
+      const h = Math.abs(p.y - s.start.y)
+      s.rect = w > k || h > k
+        ? { x: Math.min(s.start.x, p.x), y: Math.min(s.start.y, p.y), width: w, height: h }
+        : null
       this.app.render()
     } else if (s.kind === 'link') {
       this.updateLinkTarget(p)
@@ -1064,6 +1183,32 @@ export class FlowChart {
     s.shape.layout()
   }
 
+  // 多选组合缩放：以组合 bounds 的对侧为锚点，按整体缩放比等比变换每个成员
+  // 的位置与尺寸；按组内最小形状钳制缩放比，保证任何成员不低于 MIN_SIZE
+  private applyGroupResize(s: Extract<Session, { kind: 'group-resize' }>, dx: number, dy: number) {
+    const o = s.origin
+    let sx = 1
+    let sy = 1
+    if (s.handle.includes('e')) sx = (o.width + dx) / o.width
+    if (s.handle.includes('w')) sx = (o.width - dx) / o.width
+    if (s.handle.includes('s')) sy = (o.height + dy) / o.height
+    if (s.handle.includes('n')) sy = (o.height - dy) / o.height
+    const minW = Math.min(...s.origins.map(g => g.width))
+    const minH = Math.min(...s.origins.map(g => g.height))
+    sx = Math.max(sx, MIN_SIZE / minW)
+    sy = Math.max(sy, MIN_SIZE / minH)
+    // 锚点：拖拽方向的对侧边/角固定不动
+    const ax = s.handle.includes('w') ? o.x + o.width : o.x
+    const ay = s.handle.includes('n') ? o.y + o.height : o.y
+    for (const g of s.origins) {
+      g.shape.x = ax + (g.x - ax) * sx
+      g.shape.y = ay + (g.y - ay) * sy
+      g.shape.width = g.width * sx
+      g.shape.height = g.height * sy
+      g.shape.layout()
+    }
+  }
+
   private onUp(e: MouseEvent) {
     const s = this.session
     if (!s) return
@@ -1073,13 +1218,30 @@ export class FlowChart {
       this.guides = null
       this.app.render() // 清除参考线后立即重绘，否则画面残留拖拽时最后一帧
       if (s.moved) this.onChange?.('move')
+      else if (s.group) this.select(s.shape) // 组内单击未拖动：塌缩为单选该形状
     } else if (s.kind === 'resize') {
       const o = s.origin
       if (s.shape.x !== o.x || s.shape.y !== o.y || s.shape.width !== o.width || s.shape.height !== o.height) {
         this.onChange?.('resize')
       }
+    } else if (s.kind === 'group-resize') {
+      // 有成员相对初始状态发生变化时通知
+      if (s.origins.some(g => g.shape.x !== g.x || g.shape.y !== g.y || g.shape.width !== g.width || g.shape.height !== g.height)) {
+        this.onChange?.('resize')
+      }
     } else if (s.kind === 'blank') {
-      this.select(null)
+      // 框选落定：与矩形相交的形状进入多选；仅一个时退化为普通单选
+      if (s.rect) {
+        const r = s.rect
+        const hits = [...this.shapes.values()].filter(sh =>
+          sh.x < r.x + r.width && sh.x + sh.width > r.x && sh.y < r.y + r.height && sh.y + sh.height > r.y)
+        if (hits.length === 1) {
+          this.select(hits[0])
+        } else if (hits.length > 1) {
+          this.multi = hits
+          this.app.render()
+        }
+      }
     } else if (s.kind === 'edge-move') {
       // 端点重接结束：退出拖拽态；吸附目标按其端口重接（任意节点，含本连线
       // 两端节点）；未吸附时按落点命中节点重接（主导方向自动选边），纯点击
@@ -1123,7 +1285,7 @@ export class FlowChart {
     if (e.key !== 'Delete' && e.key !== 'Backspace') return
     // 覆盖层持有焦点时按键属于输入，交由编辑器处理
     if (this.editing || this.editor.hasFocus()) return
-    if (!this.selection) return
+    if (!this.selection && !this.multi.length) return
     e.preventDefault()
     this.deleteSelected()
   }
