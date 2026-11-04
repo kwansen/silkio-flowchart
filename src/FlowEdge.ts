@@ -49,6 +49,24 @@ export class FlowEdge extends Edge {
     this.toDir = hints.to ?? (horizontal ? (dx >= 0 ? 'left' : 'right') : (dy >= 0 ? 'top' : 'bottom'))
   }
 
+  // 重接一端：更换该端节点并重选端口方向（dir 缺省时按与另一端的主导方向自动选边）
+  reattachEnd(which: 'from' | 'to', node: Shape, dir?: PortDir) {
+    const other = which === 'from' ? this.toNode : this.fromNode
+    const oc = other.center()
+    const nc = node.center()
+    // 主导方向以“源→目标”为正方向计算，which 为 from 时源是 node、目标是 other，反之亦然
+    const dx = which === 'from' ? oc.x - nc.x : nc.x - oc.x
+    const dy = which === 'from' ? oc.y - nc.y : nc.y - oc.y
+    const horizontal = Math.abs(dx) >= Math.abs(dy)
+    if (which === 'from') {
+      this.fromNode = node
+      this.fromDir = dir ?? (horizontal ? (dx >= 0 ? 'right' : 'left') : (dy >= 0 ? 'bottom' : 'top'))
+    } else {
+      this.toNode = node
+      this.toDir = dir ?? (horizontal ? (dx >= 0 ? 'left' : 'right') : (dy >= 0 ? 'top' : 'bottom'))
+    }
+  }
+
   // 渲染前重算路由（也刷新 from/to 供箭头取末端方向）
   update() {
     const pts = this.route()

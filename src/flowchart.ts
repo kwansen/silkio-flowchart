@@ -16,6 +16,7 @@ const SELECT_COLOR = '#3b82f6'
 const HANDLE_SIZE = 9      // 四角手柄边长（屏幕像素）
 const HANDLE_HIT = 8       // 手柄命中半径（屏幕像素）
 const EDGE_TOLERANCE = 5   // 边线命中容差（屏幕像素）
+const EDGE_HANDLE_HIT = 8  // 连线端点手柄命中半径（屏幕像素）
 const MIN_SIZE = 20        // 缩放最小尺寸（世界坐标）
 
 // 连线端口圆点外观：沿边中点外法向浮在形状外侧，不遮挡边线与箭头
@@ -58,6 +59,8 @@ class SelectionOverlay extends Node {
     shape: Shape | null
     scale: number
     ports: Array<{ x: number; y: number }>
+    // 激活连线的首尾端点手柄（世界坐标）
+    edgeHandles: Array<{ x: number; y: number }>
     // 连线拖拽中的目标节点：ports 为其四个对接手柄，active 为吸附中的手柄
     link: { ports: Array<{ x: number; y: number }>; active: { x: number; y: number } | null } | null
   }) {
@@ -65,7 +68,7 @@ class SelectionOverlay extends Node {
   }
 
   render(ctx: CanvasRenderingContext2D) {
-    const { shape, scale, ports, link } = this.getState()
+    const { shape, scale, ports, edgeHandles, link } = this.getState()
     const k = 1 / scale
     ctx.save()
     if (shape) {
@@ -85,6 +88,19 @@ class SelectionOverlay extends Node {
       }
       // 四向连线端口圆点（浮在形状外侧）
       this.drawPorts(ctx, ports, k, null)
+    }
+    // 激活连线的首尾端点手柄（样式同四角手柄）
+    if (edgeHandles.length) {
+      ctx.strokeStyle = SELECT_COLOR
+      ctx.lineWidth = 1.5 * k
+      const s = HANDLE_SIZE * k
+      for (const h of edgeHandles) {
+        ctx.beginPath()
+        ctx.rect(h.x - s / 2, h.y - s / 2, s, s)
+        ctx.fillStyle = '#ffffff'
+        ctx.fill()
+        ctx.stroke()
+      }
     }
     // 连线拖拽目标：浮出对接手柄，吸附中的手柄实心高亮
     if (link) this.drawPorts(ctx, link.ports, k, link.active)
@@ -122,12 +138,13 @@ export interface FlowChartOptions {
   onChange?: (type: FlowChangeType) => void
 }
 
-// 交互会话：节点拖拽移动 / 拖拽缩放 / 空白按下（抬起时取消选中）/ 端口拖拽连线
+// 交互会话：节点拖拽移动 / 拖拽缩放 / 空白按下（抬起时取消选中）/ 端口拖拽连线 / 连线端点重接
 type Session =
   | { kind: 'move'; shape: Shape; start: { x: number; y: number }; origin: { x: number; y: number }; moved: boolean }
   | { kind: 'resize'; shape: Shape; handle: ResizeHandle; start: { x: number; y: number }; origin: { x: number; y: number; width: number; height: number } }
   | { kind: 'blank'; start: { x: number; y: number } }
   | { kind: 'link'; source: Shape; sourceDir: PortDir; preview: LinkPreview }
+  | { kind: 'edge-move'; edge: FlowEdge; which: 'from' | 'to'; preview: LinkPreview }
 
 // 流程图场景门面：组装视口 / 文本编辑插件，持有形状与连线模型，
 // 内置交互：点选、拖拽移动、双击编辑文字、端口拖拽连线、Delete 删除
@@ -171,10 +188,15 @@ export class FlowChart {
       const scale = this.app.renderer.viewport.scale
       const dirs = ['top', 'right', 'bottom', 'left'] as const
       const selShape = this.selShape
+      const selEdge = this.selection instanceof FlowEdge ? this.selection : null
       return {
         shape: selShape,
         scale,
         ports: selShape ? dirs.map(dir => this.portPos(selShape, dir, scale)) : [],
+        // 激活连线的首尾端点手柄
+        edgeHandles: selEdge && selEdge.points.length >= 2
+          ? [selEdge.points[0], selEdge.points[selEdge.points.length - 1]]
+          : [],
         link: this.linkTarget
           ? {
               ports: dirs.map(dir => this.portPos(this.linkTarget!, dir, scale)),
@@ -355,6 +377,17 @@ export class FlowChart {
     }
     return null
   }
+
+  // 连线端点手柄命中：返回命中的端，未命中返回 null
+  private edgeHandleHit(edge: FlowEdge, p: { x: number; y: number }, scale: number): 'from' | 'to' | null {
+    const pts = edge.points
+    if (pts.length < 2) return null
+    const r = EDGE_HANDLE_HIT / scale
+    if (Math.hypot(p.x - pts[0].x, p.y - pts[0].y) <= r) return 'from'
+    const last = pts[pts.length - 1]
+    if (Math.hypot(p.x - last.x, p.y - last.y) <= r) return 'to'
+    return null
+  }
   //#endregion
 
   //#region 编辑
@@ -506,6 +539,24 @@ export class FlowChart {
         return
       }
     }
+    // 激活连线的首尾手柄：拖拽重接该端（优先于命中其他形状）
+    if (this.selection instanceof FlowEdge) {
+      const edge = this.selection
+      const which = this.edgeHandleHit(edge, p, scale)
+      if (which) {
+        const preview = new LinkPreview()
+        const pts = edge.points
+        preview.from = which === 'from' ? pts[pts.length - 1] : pts[0]
+        preview.to = p
+        const idx = this.app.children.findIndex(n => n instanceof Shape)
+        if (idx === -1) this.app.children.push(preview)
+        else this.app.children.splice(idx, 0, preview)
+        this.session = { kind: 'edge-move', edge, which, preview }
+        this.options.canvas.style.cursor = 'crosshair'
+        this.app.render()
+        return
+      }
+    }
     const hit = this.hitShape(p)
     if (hit) {
       this.select(hit)
@@ -529,6 +580,7 @@ export class FlowChart {
       const p = this.toWorld(e)
       const scale = this.app.renderer.viewport.scale
       let cursor = this.selShape ? this.hoverCursor(this.selShape, p, scale) : null
+      if (cursor === null && this.selection instanceof FlowEdge && this.edgeHandleHit(this.selection, p, scale)) cursor = 'move'
       if (cursor === null) cursor = this.hitShape(p) ? 'move' : null
       if (cursor === null) cursor = this.hitEdge(p, scale) ? 'pointer' : null
       this.options.canvas.style.cursor = cursor ?? ''
@@ -544,8 +596,15 @@ export class FlowChart {
       this.applyResize(s, p.x - s.start.x, p.y - s.start.y)
       this.app.render()
     } else if (s.kind === 'link') {
-      this.updateLinkTarget(s, p)
+      this.updateLinkTarget(p, [s.source])
       // 吸附时预览线末端跟随目标节点的对接手柄
+      s.preview.to = this.linkTarget && this.linkSnap
+        ? this.portPos(this.linkTarget, this.linkSnap, this.app.renderer.viewport.scale)
+        : p
+      this.app.render()
+    } else if (s.kind === 'edge-move') {
+      // 重接目标排除本连线两端节点（不支持自环）
+      this.updateLinkTarget(p, [s.edge.fromNode, s.edge.toNode])
       s.preview.to = this.linkTarget && this.linkSnap
         ? this.portPos(this.linkTarget, this.linkSnap, this.app.renderer.viewport.scale)
         : p
@@ -554,14 +613,14 @@ export class FlowChart {
   }
 
   // 连线拖拽中更新吸附目标：光标进入某节点包围盒外扩 LINK_SNAP_MARGIN 范围时，
-  // 该节点成为目标（浮出对接手柄），并吸附到距光标最近的端口
-  private updateLinkTarget(s: Extract<Session, { kind: 'link' }>, p: { x: number; y: number }) {
+  // 该节点成为目标（浮出对接手柄），并吸附到距光标最近的端口；exclude 为排除的节点
+  private updateLinkTarget(p: { x: number; y: number }, exclude: Shape[]) {
     const scale = this.app.renderer.viewport.scale
     const m = LINK_SNAP_MARGIN / scale
     this.linkTarget = null
     this.linkSnap = null
     for (const shape of this.shapes.values()) {
-      if (shape === s.source) continue
+      if (exclude.includes(shape)) continue
       if (p.x < shape.x - m || p.x > shape.x + shape.width + m || p.y < shape.y - m || p.y > shape.y + shape.height + m) continue
       this.linkTarget = shape
       let best = Infinity
@@ -612,6 +671,19 @@ export class FlowChart {
       }
     } else if (s.kind === 'blank') {
       this.select(null)
+    } else if (s.kind === 'edge-move') {
+      // 端点重接结束：移除预览；吸附目标按其端口重接，否则按落点命中节点重接（主导方向自动选边）
+      this.removeTop(s.preview)
+      const target = this.linkTarget
+      const snap = this.linkSnap
+      this.linkTarget = null
+      this.linkSnap = null
+      const hit = target ?? this.hitShape(this.toWorld(e))
+      if (hit && hit !== s.edge.fromNode && hit !== s.edge.toNode) {
+        s.edge.reattachEnd(s.which, hit, target && snap ? snap : undefined)
+        this.onChange?.('reconnect')
+      }
+      this.app.render()
     } else {
       // 连线拖拽结束：移除预览；吸附中的目标按其端口固定创建连线，否则按落点命中建边
       this.removeTop(s.preview)
