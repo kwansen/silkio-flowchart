@@ -4,7 +4,7 @@ import { TextEditor } from '@silker/plugin-text-editor'
 import type { TextEditorCapability } from '@silker/plugin-text-editor'
 import { createShape } from './shapes'
 import { Shape } from './Shape'
-import { FlowEdge } from './FlowEdge'
+import { FlowEdge, OPPOSITE_DIR, PORT_DIR_VEC, renderEdgePreview } from './FlowEdge'
 import type { FlowEdgeHints, PortDir } from './FlowEdge'
 import type { FlowChangeType, FlowData, ShapeKind } from './data'
 
@@ -29,20 +29,17 @@ const LINK_SNAP_MARGIN = 16 // 吸附感应范围（屏幕像素）
 // 缩放手柄方位：四角 + 四边
 type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
 
-// 连线拖拽预览：虚线段跟随鼠标（纯视觉，不参与命中）
+// 连线拖拽预览：与正式连线同款式的正交折线 + 箭头（from 为固定端端口及其方向，
+// to 为光标或吸附端端口；toDir 随光标相对出口端口的位置实时变化）
 class LinkPreview extends Node {
   from = { x: 0, y: 0 }
   to = { x: 0, y: 0 }
+  fromDir: PortDir = 'right'
+  toDir: PortDir = 'left'
 
   render(ctx: CanvasRenderingContext2D) {
     ctx.save()
-    ctx.setLineDash([6, 4])
-    ctx.strokeStyle = '#3b82f6'
-    ctx.lineWidth = 2
-    ctx.beginPath()
-    ctx.moveTo(this.from.x, this.from.y)
-    ctx.lineTo(this.to.x, this.to.y)
-    ctx.stroke()
+    renderEdgePreview(ctx, FlowEdge.routeBetween(this.from, this.fromDir, this.to, this.toDir))
     ctx.restore()
   }
 
@@ -523,8 +520,10 @@ export class FlowChart {
       const dir = this.portHit(sel, p, scale)
       if (dir) {
         const preview = new LinkPreview()
-        preview.from = this.portPos(sel, dir, scale)
+        preview.from = sel.portAt(dir)
+        preview.fromDir = dir
         preview.to = p
+        preview.toDir = this.previewToDir(dir, preview.from, p)
         const idx = this.app.children.findIndex(n => n instanceof Shape)
         if (idx === -1) this.app.children.push(preview)
         else this.app.children.splice(idx, 0, preview)
@@ -546,8 +545,11 @@ export class FlowChart {
       if (which) {
         const preview = new LinkPreview()
         const pts = edge.points
+        // 固定端（另一端）作为预览出口，其端口与方向决定预览路由
         preview.from = which === 'from' ? pts[pts.length - 1] : pts[0]
+        preview.fromDir = which === 'from' ? edge.toDir : edge.fromDir
         preview.to = p
+        preview.toDir = this.previewToDir(preview.fromDir, preview.from, p)
         const idx = this.app.children.findIndex(n => n instanceof Shape)
         if (idx === -1) this.app.children.push(preview)
         else this.app.children.splice(idx, 0, preview)
@@ -597,19 +599,37 @@ export class FlowChart {
       this.app.render()
     } else if (s.kind === 'link') {
       this.updateLinkTarget(p, [s.source])
-      // 吸附时预览线末端跟随目标节点的对接手柄
-      s.preview.to = this.linkTarget && this.linkSnap
-        ? this.portPos(this.linkTarget, this.linkSnap, this.app.renderer.viewport.scale)
-        : p
+      // 吸附时预览以手柄的具体位置与端口方向渲染；自由拖拽时按光标相对
+      // 出口端口的位置确定虚拟进入方向
+      if (this.linkTarget && this.linkSnap) {
+        s.preview.to = this.linkTarget.portAt(this.linkSnap)
+        s.preview.toDir = this.linkSnap
+      } else {
+        s.preview.to = p
+        s.preview.toDir = this.previewToDir(s.sourceDir, s.preview.from, p)
+      }
       this.app.render()
     } else if (s.kind === 'edge-move') {
       // 重接目标排除本连线两端节点（不支持自环）
       this.updateLinkTarget(p, [s.edge.fromNode, s.edge.toNode])
-      s.preview.to = this.linkTarget && this.linkSnap
-        ? this.portPos(this.linkTarget, this.linkSnap, this.app.renderer.viewport.scale)
-        : p
+      if (this.linkTarget && this.linkSnap) {
+        s.preview.to = this.linkTarget.portAt(this.linkSnap)
+        s.preview.toDir = this.linkSnap
+      } else {
+        s.preview.to = p
+        s.preview.toDir = this.previewToDir(s.preview.fromDir, s.preview.from, p)
+      }
       this.app.render()
     }
+  }
+
+  // 自由拖拽时预览的虚拟进入方向：与出口方向同轴，按光标相对出口端口的位置
+  // 选边——光标在出口外法向一侧时同侧进入（如从下方出来、光标在下方则按
+  // 从下面进入），越过出口端口时对侧进入
+  private previewToDir(exitDir: PortDir, exitPort: { x: number; y: number }, p: { x: number; y: number }): PortDir {
+    const v = PORT_DIR_VEC[exitDir]
+    const proj = (p.x - exitPort.x) * v.x + (p.y - exitPort.y) * v.y
+    return proj > 0 ? exitDir : OPPOSITE_DIR[exitDir]
   }
 
   // 连线拖拽中更新吸附目标：光标进入某节点包围盒外扩 LINK_SNAP_MARGIN 范围时，

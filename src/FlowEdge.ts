@@ -80,24 +80,8 @@ export class FlowEdge extends Edge {
     const pts = this.route()
     const color = this.selected ? SELECT_COLOR : this.color
     // 线体末端回缩一个箭头长度再绘制，避免线头从三角箭头下方露出
-    this.renderOrtho(ctx, this.trimForArrow(pts), color)
-    this.drawArrow(ctx, pts, color)
-  }
-
-  // 返回末端沿最后一段回缩 ARROW_LEN 的折线副本（回缩量不超过该段长度）
-  private trimForArrow(pts: EdgePoint[]): EdgePoint[] {
-    const n = pts.length
-    if (n < 2) return pts
-    const to = pts[n - 1]
-    const prev = pts[n - 2]
-    const dx = to.x - prev.x
-    const dy = to.y - prev.y
-    const len = Math.hypot(dx, dy)
-    if (len === 0) return pts
-    const back = Math.min(ARROW_LEN, len)
-    const out = pts.slice()
-    out[n - 1] = { x: to.x - (dx / len) * back, y: to.y - (dy / len) * back }
-    return out
+    renderOrthoPolyline(ctx, trimEdgeEnd(pts), color, this.lineWidth, this.cornerRadius)
+    drawEdgeArrow(ctx, pts, color)
   }
 
   // 命中检测：点到折线各段的最近距离是否在容差内（世界坐标）
@@ -110,14 +94,18 @@ export class FlowEdge extends Edge {
     return false
   }
 
-  // 生成正交路径点（相邻重复点已剔除）。
-  // 首段沿源端口外法向、末段沿目标端口外法向反向进入，方向锁定；
-  // 中段按方向组合与相对位置选 Z 形（顺畅）或 S 形（绕行，无折返）
+  // 生成正交路径点（相邻重复点已剔除）。首段沿源端口外法向、末段沿目标端口
+  // 外法向反向进入，方向锁定；中段按方向组合与相对位置选 Z 形（顺畅）或
+  // L 形 / S 形（绕行，无折返）
   private route(): EdgePoint[] {
-    const s = this.fromNode.portAt(this.fromDir)
-    const t = this.toNode.portAt(this.toDir)
-    const fv = PORT_DIR_VEC[this.fromDir]
-    const tv = PORT_DIR_VEC[this.toDir]
+    return FlowEdge.routeBetween(this.fromNode.portAt(this.fromDir), this.fromDir, this.toNode.portAt(this.toDir), this.toDir)
+  }
+
+  // 两端口间的正交路由：实例连线与拖拽预览共用。
+  // 首段沿 fromDir 外法向引出 stub、末段沿 toDir 外法向反向进入，方向锁定
+  static routeBetween(s: EdgePoint, fromDir: PortDir, t: EdgePoint, toDir: PortDir): EdgePoint[] {
+    const fv = PORT_DIR_VEC[fromDir]
+    const tv = PORT_DIR_VEC[toDir]
     // 沿外法向引出固定长度直段，保证出口/入口段方向始终与端口方向一致
     const s2 = { x: s.x + fv.x * PORT_STUB, y: s.y + fv.y * PORT_STUB }
     const t2 = { x: t.x + tv.x * PORT_STUB, y: t.y + tv.y * PORT_STUB }
@@ -177,52 +165,58 @@ export class FlowEdge extends Edge {
       ? [s, s2, { x: s2.x, y: t2.y }, t2, t]     // 先竖后横
       : [s, s2, { x: t2.x, y: s2.y }, t2, t])    // 先横后竖（恒安全）
   }
+}
 
-  // 正交折线渲染：中间每个拐点用 arcTo 做四分之一圆弧（半径 cornerRadius，
-  // 自动收缩到相邻边长一半以内），其余为水平/垂直直线段
-  private renderOrtho(ctx: CanvasRenderingContext2D, pts: EdgePoint[], color: string) {
-    const r = this.cornerRadius
-    ctx.strokeStyle = color
-    ctx.lineWidth = this.lineWidth
-    ctx.beginPath()
-    ctx.moveTo(pts[0].x, pts[0].y)
-    for (let i = 1; i < pts.length - 1; i++) {
-      const prev = pts[i - 1]
-      const cur = pts[i]
-      const next = pts[i + 1]
-      const d1 = Math.hypot(cur.x - prev.x, cur.y - prev.y)
-      const d2 = Math.hypot(next.x - cur.x, next.y - cur.y)
-      if (d1 === 0 || d2 === 0) {
-        ctx.lineTo(cur.x, cur.y)
-        continue
-      }
-      const rr = Math.min(r, d1 / 2, d2 / 2)
-      // 直线走到圆弧起点（沿 cur→prev 方向回退 rr），再经拐点圆弧切向接入下一段
-      ctx.lineTo(cur.x + ((prev.x - cur.x) / d1) * rr, cur.y + ((prev.y - cur.y) / d1) * rr)
-      ctx.arcTo(cur.x, cur.y, next.x, next.y, rr)
+// 正交折线渲染：中间每个拐点用 arcTo 做四分之一圆弧（半径 cornerRadius，
+// 自动收缩到相邻边长一半以内），其余为水平/垂直直线段
+function renderOrthoPolyline(ctx: CanvasRenderingContext2D, pts: EdgePoint[], color: string, lineWidth: number, cornerRadius: number) {
+  const r = cornerRadius
+  ctx.strokeStyle = color
+  ctx.lineWidth = lineWidth
+  ctx.beginPath()
+  ctx.moveTo(pts[0].x, pts[0].y)
+  for (let i = 1; i < pts.length - 1; i++) {
+    const prev = pts[i - 1]
+    const cur = pts[i]
+    const next = pts[i + 1]
+    const d1 = Math.hypot(cur.x - prev.x, cur.y - prev.y)
+    const d2 = Math.hypot(next.x - cur.x, next.y - cur.y)
+    if (d1 === 0 || d2 === 0) {
+      ctx.lineTo(cur.x, cur.y)
+      continue
     }
-    const last = pts[pts.length - 1]
-    ctx.lineTo(last.x, last.y)
-    ctx.stroke()
+    const rr = Math.min(r, d1 / 2, d2 / 2)
+    // 直线走到圆弧起点（沿 cur→prev 方向回退 rr），再经拐点圆弧切向接入下一段
+    ctx.lineTo(cur.x + ((prev.x - cur.x) / d1) * rr, cur.y + ((prev.y - cur.y) / d1) * rr)
+    ctx.arcTo(cur.x, cur.y, next.x, next.y, rr)
   }
+  const last = pts[pts.length - 1]
+  ctx.lineTo(last.x, last.y)
+  ctx.stroke()
+}
 
-  // 实心三角箭头：平移到终点并按最后一段直线方向旋转后绘制
-  private drawArrow(ctx: CanvasRenderingContext2D, pts: EdgePoint[], color: string) {
-    const to = pts[pts.length - 1]
-    const prev = pts[pts.length - 2]
-    if (prev.x === to.x && prev.y === to.y) return
-    ctx.save()
-    ctx.translate(to.x, to.y)
-    ctx.rotate(Math.atan2(to.y - prev.y, to.x - prev.x))
-    ctx.beginPath()
-    ctx.moveTo(0, 0)
-    ctx.lineTo(-ARROW_LEN, 4)
-    ctx.lineTo(-ARROW_LEN, -4)
-    ctx.closePath()
-    ctx.fillStyle = color
-    ctx.fill()
-    ctx.restore()
-  }
+// 实心三角箭头：平移到终点并按最后一段直线方向旋转后绘制
+function drawEdgeArrow(ctx: CanvasRenderingContext2D, pts: EdgePoint[], color: string) {
+  const to = pts[pts.length - 1]
+  const prev = pts[pts.length - 2]
+  if (prev.x === to.x && prev.y === to.y) return
+  ctx.save()
+  ctx.translate(to.x, to.y)
+  ctx.rotate(Math.atan2(to.y - prev.y, to.x - prev.x))
+  ctx.beginPath()
+  ctx.moveTo(0, 0)
+  ctx.lineTo(-ARROW_LEN, 4)
+  ctx.lineTo(-ARROW_LEN, -4)
+  ctx.closePath()
+  ctx.fillStyle = color
+  ctx.fill()
+  ctx.restore()
+}
+
+// 拖拽预览渲染：与正式连线同款式的正交折线（末端回缩）+ 箭头
+export function renderEdgePreview(ctx: CanvasRenderingContext2D, pts: EdgePoint[], color = '#3b82f6') {
+  renderOrthoPolyline(ctx, trimEdgeEnd(pts), color, 2, 8)
+  drawEdgeArrow(ctx, pts, color)
 }
 
 // 选中态线色（与选中框同色系）
@@ -232,11 +226,35 @@ const SELECT_COLOR = '#3b82f6'
 const ARROW_LEN = 10
 
 // 端口外法向单位向量（top 向上、right 向右、bottom 向下、left 向左）
-const PORT_DIR_VEC: Record<PortDir, EdgePoint> = {
+export const PORT_DIR_VEC: Record<PortDir, EdgePoint> = {
   top: { x: 0, y: -1 },
   right: { x: 1, y: 0 },
   bottom: { x: 0, y: 1 },
   left: { x: -1, y: 0 },
+}
+
+// 端口方向的相反方向
+export const OPPOSITE_DIR: Record<PortDir, PortDir> = {
+  top: 'bottom',
+  bottom: 'top',
+  left: 'right',
+  right: 'left',
+}
+
+// 返回末端沿最后一段回缩 ARROW_LEN 的折线副本（回缩量不超过该段长度）
+function trimEdgeEnd(pts: EdgePoint[]): EdgePoint[] {
+  const n = pts.length
+  if (n < 2) return pts
+  const to = pts[n - 1]
+  const prev = pts[n - 2]
+  const dx = to.x - prev.x
+  const dy = to.y - prev.y
+  const len = Math.hypot(dx, dy)
+  if (len === 0) return pts
+  const back = Math.min(ARROW_LEN, len)
+  const out = pts.slice()
+  out[n - 1] = { x: to.x - (dx / len) * back, y: to.y - (dy / len) * back }
+  return out
 }
 
 // 出口/入口直段长度（世界坐标）：端口沿外法向引出的锁定方向段
