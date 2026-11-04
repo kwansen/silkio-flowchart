@@ -313,12 +313,33 @@ export class FlowChart {
     if (i !== -1) this.app.children.splice(i, 1)
   }
 
-  private select(shape: Shape | FlowEdge | null) {
-    if (this.selection === shape) return
+  private select(sel: Shape | FlowEdge | null) {
+    if (this.selection === sel) return
     if (this.selection) this.selection.selected = false
-    this.selection = shape
-    if (shape) shape.selected = true
+    this.selection = sel
+    if (sel) {
+      sel.selected = true
+      // 激活的连线提到连线层最上再渲染，避免激活样式被其他连线覆盖
+      if (sel instanceof FlowEdge) this.raiseEdgeTop(sel)
+    }
     this.app.render()
+  }
+
+  // 把连线移到连线层最上（保持在形状层/覆盖层之下）
+  private raiseEdgeTop(edge: FlowEdge) {
+    const children = this.app.children
+    const from = children.indexOf(edge)
+    if (from === -1) return
+    let to = from
+    for (let j = from + 1; j < children.length; j++) {
+      const c = children[j]
+      if (c instanceof Shape || c === this.overlay) break
+      to = j
+    }
+    if (to !== from) {
+      children.splice(from, 1)
+      children.splice(to, 0, edge)
+    }
   }
 
   // 选中的形状（选中连线时为 null）
