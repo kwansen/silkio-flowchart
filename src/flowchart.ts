@@ -300,10 +300,15 @@ export class FlowChart {
             }
           : null,
         guides: this.guides,
-        // 框选拖拽中返回矩形，落定后返回多选组合 bounds
+        // 框选拖拽中：实时显示已框中节点的整体选框（不显示鼠标拖出的矩形，
+        // 未框中节点时不显示）；落定后返回多选组合 bounds
         marquee: (() => {
           const s = this.session
-          if (s && s.kind === 'blank') return s.rect
+          if (s && s.kind === 'blank') {
+            if (!s.rect) return null
+            const hits = this.marqueeHits(s.rect)
+            return hits.length ? this.unionBounds(hits) : null
+          }
           return this.multiBounds
         })(),
       }
@@ -464,17 +469,28 @@ export class FlowChart {
   // 多选组合的包围盒（少于 2 个形状时视为无组合）
   private get multiBounds(): Bounds | null {
     if (this.multi.length < 2) return null
+    return this.unionBounds(this.multi)
+  }
+
+  // 多个形状的并集包围盒
+  private unionBounds(shapes: Shape[]): Bounds {
     let x0 = Infinity
     let y0 = Infinity
     let x1 = -Infinity
     let y1 = -Infinity
-    for (const s of this.multi) {
+    for (const s of shapes) {
       x0 = Math.min(x0, s.x)
       y0 = Math.min(y0, s.y)
       x1 = Math.max(x1, s.x + s.width)
       y1 = Math.max(y1, s.y + s.height)
     }
     return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+  }
+
+  // 与框选矩形相交的形状（相交即命中）
+  private marqueeHits(r: Bounds): Shape[] {
+    return [...this.shapes.values()].filter(sh =>
+      sh.x < r.x + r.width && sh.x + sh.width > r.x && sh.y < r.y + r.height && sh.y + sh.height > r.y)
   }
 
   // 把连线移到连线层最上（保持在形状层/覆盖层之下）
@@ -1232,9 +1248,7 @@ export class FlowChart {
     } else if (s.kind === 'blank') {
       // 框选落定：与矩形相交的形状进入多选；仅一个时退化为普通单选
       if (s.rect) {
-        const r = s.rect
-        const hits = [...this.shapes.values()].filter(sh =>
-          sh.x < r.x + r.width && sh.x + sh.width > r.x && sh.y < r.y + r.height && sh.y + sh.height > r.y)
+        const hits = this.marqueeHits(s.rect)
         if (hits.length === 1) {
           this.select(hits[0])
         } else if (hits.length > 1) {
