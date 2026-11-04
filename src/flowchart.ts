@@ -791,7 +791,8 @@ export class FlowChart {
       s.shape.x = s.origin.x + (p.x - s.start.x)
       s.shape.y = s.origin.y + (p.y - s.start.y)
       s.moved = true
-      this.applySnap(s.shape)
+      // 组合移动：组内成员不作为吸附参考目标，避免触发内部基线
+      this.applySnap(s.shape, s.group ? new Set(s.group.map((g) => g.shape)) : null)
       // 组合移动：其余成员跟随主形状的吸附后位移
       if (s.group) {
         const dx = s.shape.x - s.origin.x
@@ -885,10 +886,10 @@ export class FlowChart {
   // 对齐吸附仅同类型基准配对——左对左、中对中、右对右（上/中/下同理），取各类
   // 最小差值做吸附平移；第二遍收集吸附后所有阈值内已对齐的基准（等宽节点上下
   // 对齐时中线随之对齐，跳过中线参考线）
-  private applySnap(shape: Shape) {
+  private applySnap(shape: Shape, exclude: Set<Shape> | null = null) {
     const scale = this.app.renderer.viewport.scale
     const tol = SNAP_TOLERANCE / scale
-    const spacing = this.applySpacingSnap(shape, false, false)
+    const spacing = this.applySpacingSnap(shape, false, false, exclude)
     const skipX = spacing.snappedX
     const skipY = spacing.snappedY
     const xs = () => [shape.x, shape.x + shape.width / 2, shape.x + shape.width]
@@ -896,7 +897,7 @@ export class FlowChart {
     let bestX: { d: number; shift: number } | null = null
     let bestY: { d: number; shift: number } | null = null
     for (const other of this.shapes.values()) {
-      if (other === shape) continue
+      if (other === shape || (exclude && exclude.has(other))) continue
       const oxs = [other.x, other.x + other.width / 2, other.x + other.width]
       const oys = [other.y, other.y + other.height / 2, other.y + other.height]
       for (let i = 0; i < 3; i++) {
@@ -918,7 +919,7 @@ export class FlowChart {
     const vSkip = new Set<number>()
     const hSkip = new Set<number>()
     for (const other of this.shapes.values()) {
-      if (other === shape) continue
+      if (other === shape || (exclude && exclude.has(other))) continue
       const oxs = [other.x, other.x + other.width / 2, other.x + other.width]
       const oys = [other.y, other.y + other.height / 2, other.y + other.height]
       for (let i = 0; i < 3; i++) {
@@ -944,14 +945,15 @@ export class FlowChart {
   // 3. 两侧邻居间隙相等时平分差值；仅一侧有邻居时复现既有间距。
   // 返回绘制用的测量线段，以及两轴是否发生了吸附
   // （skipX/skipY 用于跳过对应轴；调用方以间距吸附结果决定对齐吸附是否生效）
-  private applySpacingSnap(shape: Shape, skipX: boolean, skipY: boolean): {
+  private applySpacingSnap(shape: Shape, skipX: boolean, skipY: boolean, exclude: Set<Shape> | null = null): {
     guides: SpacingGuide[]; snappedX: boolean; snappedY: boolean
   } {
     const tol = SPACING_TOLERANCE / this.app.renderer.viewport.scale
     const out: SpacingGuide[] = []
     let snappedX = false
     let snappedY = false
-    const shapes = [...this.shapes.values()]
+    // exclude：组合拖拽时排除组内成员，避免组内部间距/基线干扰吸附
+    const shapes = [...this.shapes.values()].filter((o) => !exclude || !exclude.has(o))
     // 间隙聚类取众数：簇内相邻差值 <= tol，出现次数 >= 2 时取簇均值，否则 NaN
     const modeGap = (gaps: number[]): number => {
       if (gaps.length < 2) return NaN
