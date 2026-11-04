@@ -86,14 +86,14 @@ class SelectionOverlay extends Node {
       // 四向连线端口圆点（浮在形状外侧）
       this.drawPorts(ctx, ports, k, null)
     }
-    // 激活连线的首尾端点手柄（样式同四角手柄）
+    // 激活连线的首尾端点手柄（白底蓝边圆形）
     if (edgeHandles.length) {
       ctx.strokeStyle = SELECT_COLOR
       ctx.lineWidth = 1.5 * k
-      const s = HANDLE_SIZE * k
+      const r = (HANDLE_SIZE / 2) * k
       for (const h of edgeHandles) {
         ctx.beginPath()
-        ctx.rect(h.x - s / 2, h.y - s / 2, s, s)
+        ctx.arc(h.x, h.y, r, 0, Math.PI * 2)
         ctx.fillStyle = '#ffffff'
         ctx.fill()
         ctx.stroke()
