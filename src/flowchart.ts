@@ -76,14 +76,24 @@ class SelectionOverlay extends Node {
     guides: { v: number[]; h: number[]; spacing: SpacingGuide[] } | null
     // 框选矩形（拖拽中）或多选组合 bounds（落定后），样式与单选框一致
     marquee: Bounds | null
+    // 左键拖拽中的框选矩形：半透明纯矩形，无手柄（同思维导图 Marquee 样式）
+    dragRect: Bounds | null
   }) {
     super()
   }
 
   render(ctx: CanvasRenderingContext2D) {
-    const { shape, scale, ports, edgeHandles, link, guides, marquee } = this.getState()
+    const { shape, scale, ports, edgeHandles, link, guides, marquee, dragRect } = this.getState()
     const k = 1 / scale
     ctx.save()
+    // 左键拖拽中的框选矩形：半透明填充 + 半透明描边的纯矩形（与思维导图一致）
+    if (dragRect) {
+      ctx.fillStyle = 'rgba(59, 130, 246, 0.08)'
+      ctx.strokeStyle = 'rgba(59, 130, 246, 0.6)'
+      ctx.lineWidth = 1 * k
+      ctx.fillRect(dragRect.x, dragRect.y, dragRect.width, dragRect.height)
+      ctx.strokeRect(dragRect.x, dragRect.y, dragRect.width, dragRect.height)
+    }
     // 框选框 / 多选组合框：与单选框同样式（边框 + 四角手柄），无连线端口
     if (marquee) {
       ctx.strokeStyle = SELECT_COLOR
@@ -300,8 +310,8 @@ export class FlowChart {
             }
           : null,
         guides: this.guides,
-        // 框选拖拽中：实时显示已框中节点的整体选框（不显示鼠标拖出的矩形，
-        // 未框中节点时不显示）；落定后返回多选组合 bounds
+        // 框选拖拽中：实时显示已框中节点的整体选框（随拖拽更新，未框中节点时
+        // 不显示），拖拽矩形本身由 dragRect 以纯矩形样式绘制；落定后为多选组合 bounds
         marquee: (() => {
           const s = this.session
           if (s && s.kind === 'blank') {
@@ -311,6 +321,7 @@ export class FlowChart {
           }
           return this.multiBounds
         })(),
+        dragRect: this.session?.kind === 'blank' ? this.session.rect : null,
       }
     })
     this.app.add(this.overlay)
@@ -746,9 +757,8 @@ export class FlowChart {
       this.app.render()
       return
     }
-    // 空白按下：立即取消选中，可拖出框选矩形
+    // 空白按下：立即取消选中，可拖出框选矩形（光标保持 default）
     this.select(null)
-    this.options.canvas.style.cursor = 'crosshair'
     this.session = { kind: 'blank', start: p, rect: null }
   }
 
