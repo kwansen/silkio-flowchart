@@ -94,10 +94,22 @@ export class FlowEdge extends Edge {
     return false
   }
 
+  // 端点拖拽态：拖拽中的端以 dragPoint（光标或吸附端口）替代原端口参与路由，
+  // dragDir 为该端的虚拟方向（随光标位置变化）；null 表示未在拖拽
+  dragWhich: 'from' | 'to' | null = null
+  dragPoint: EdgePoint = { x: 0, y: 0 }
+  dragDir: PortDir = 'top'
+
   // 生成正交路径点（相邻重复点已剔除）。首段沿源端口外法向、末段沿目标端口
   // 外法向反向进入，方向锁定；中段按方向组合与相对位置选 Z 形（顺畅）或
   // L 形 / S 形（绕行，无折返）
   private route(): EdgePoint[] {
+    if (this.dragWhich === 'from') {
+      return FlowEdge.routeBetween(this.dragPoint, this.dragDir, this.toNode.portAt(this.toDir), this.toDir)
+    }
+    if (this.dragWhich === 'to') {
+      return FlowEdge.routeBetween(this.fromNode.portAt(this.fromDir), this.fromDir, this.dragPoint, this.dragDir)
+    }
     return FlowEdge.routeBetween(this.fromNode.portAt(this.fromDir), this.fromDir, this.toNode.portAt(this.toDir), this.toDir)
   }
 

@@ -141,7 +141,7 @@ type Session =
   | { kind: 'resize'; shape: Shape; handle: ResizeHandle; start: { x: number; y: number }; origin: { x: number; y: number; width: number; height: number } }
   | { kind: 'blank'; start: { x: number; y: number } }
   | { kind: 'link'; source: Shape; sourceDir: PortDir; preview: LinkPreview }
-  | { kind: 'edge-move'; edge: FlowEdge; which: 'from' | 'to'; preview: LinkPreview }
+  | { kind: 'edge-move'; edge: FlowEdge; which: 'from' | 'to' }
 
 // 流程图场景门面：组装视口 / 文本编辑插件，持有形状与连线模型，
 // 内置交互：点选、拖拽移动、双击编辑文字、端口拖拽连线、Delete 删除
@@ -543,17 +543,13 @@ export class FlowChart {
       const edge = this.selection
       const which = this.edgeHandleHit(edge, p, scale)
       if (which) {
-        const preview = new LinkPreview()
-        const pts = edge.points
-        // 固定端（另一端）作为预览出口，其端口与方向决定预览路由
-        preview.from = which === 'from' ? pts[pts.length - 1] : pts[0]
-        preview.fromDir = which === 'from' ? edge.toDir : edge.fromDir
-        preview.to = p
-        preview.toDir = this.previewToDir(preview.fromDir, preview.from, p)
-        const idx = this.app.children.findIndex(n => n instanceof Shape)
-        if (idx === -1) this.app.children.push(preview)
-        else this.app.children.splice(idx, 0, preview)
-        this.session = { kind: 'edge-move', edge, which, preview }
+        // 直接拖拽原连线：被拖端进入拖拽态，路由以光标为虚拟端口
+        const fixedDir = which === 'from' ? edge.toDir : edge.fromDir
+        const fixedPort = which === 'from' ? edge.toNode.portAt(edge.toDir) : edge.fromNode.portAt(edge.fromDir)
+        edge.dragWhich = which
+        edge.dragPoint = p
+        edge.dragDir = this.previewToDir(fixedDir, fixedPort, p)
+        this.session = { kind: 'edge-move', edge, which }
         this.options.canvas.style.cursor = 'crosshair'
         this.app.render()
         return
@@ -610,14 +606,17 @@ export class FlowChart {
       }
       this.app.render()
     } else if (s.kind === 'edge-move') {
-      // 重接目标排除本连线两端节点（不支持自环）
+      // 原连线被拖端跟随光标：吸附时落在目标手柄上，自由拖拽时按出口方向
+      // 与光标位置确定虚拟进入方向（重接目标排除本连线两端节点，不支持自环）
       this.updateLinkTarget(p, [s.edge.fromNode, s.edge.toNode])
       if (this.linkTarget && this.linkSnap) {
-        s.preview.to = this.linkTarget.portAt(this.linkSnap)
-        s.preview.toDir = this.linkSnap
+        s.edge.dragPoint = this.linkTarget.portAt(this.linkSnap)
+        s.edge.dragDir = this.linkSnap
       } else {
-        s.preview.to = p
-        s.preview.toDir = this.previewToDir(s.preview.fromDir, s.preview.from, p)
+        const fixedDir = s.which === 'from' ? s.edge.toDir : s.edge.fromDir
+        const fixedPort = s.which === 'from' ? s.edge.toNode.portAt(s.edge.toDir) : s.edge.fromNode.portAt(s.edge.fromDir)
+        s.edge.dragPoint = p
+        s.edge.dragDir = this.previewToDir(fixedDir, fixedPort, p)
       }
       this.app.render()
     }
@@ -692,8 +691,9 @@ export class FlowChart {
     } else if (s.kind === 'blank') {
       this.select(null)
     } else if (s.kind === 'edge-move') {
-      // 端点重接结束：移除预览；吸附目标按其端口重接，否则按落点命中节点重接（主导方向自动选边）
-      this.removeTop(s.preview)
+      // 端点重接结束：退出拖拽态；吸附目标按其端口重接，否则按落点命中节点
+      // 重接（主导方向自动选边）；无目标则连线弹回原状
+      s.edge.dragWhich = null
       const target = this.linkTarget
       const snap = this.linkSnap
       this.linkTarget = null
