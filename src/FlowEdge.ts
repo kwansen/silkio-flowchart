@@ -28,6 +28,10 @@ export class FlowEdge extends Edge {
   // 两端固定端口方向（创建时冻结，节点移动不再改变）
   fromDir: PortDir
   toDir: PortDir
+  // 选中态标志（由 FlowChart 维护；选中视觉——线色高亮——由渲染处理）
+  selected = false
+  // 最近一次路由的折线点（渲染时更新，供命中检测使用）
+  points: EdgePoint[] = []
 
   constructor(from: Shape, to: Shape, hints: FlowEdgeHints = {}) {
     super({ color: '#94a3b8', lineWidth: 2, cornerRadius: 8 })
@@ -47,6 +51,7 @@ export class FlowEdge extends Edge {
   // 渲染前重算路由（也刷新 from/to 供箭头取末端方向）
   update() {
     const pts = this.route()
+    this.points = pts
     this.from = pts[0]
     this.to = pts[pts.length - 1]
   }
@@ -54,8 +59,19 @@ export class FlowEdge extends Edge {
   render(ctx: CanvasRenderingContext2D) {
     this.update()
     const pts = this.route()
-    this.renderOrtho(ctx, pts)
-    this.drawArrow(ctx, pts)
+    const color = this.selected ? SELECT_COLOR : this.color
+    this.renderOrtho(ctx, pts, color)
+    this.drawArrow(ctx, pts, color)
+  }
+
+  // 命中检测：点到折线各段的最近距离是否在容差内（世界坐标）
+  hitPoint(p: { x: number; y: number }, tolerance: number): boolean {
+    const pts = this.points
+    if (pts.length < 2) return false
+    for (let i = 1; i < pts.length; i++) {
+      if (distSeg(p, pts[i - 1], pts[i]) <= tolerance) return true
+    }
+    return false
   }
 
   // 生成正交路径点（相邻重复点已剔除）。
@@ -108,9 +124,9 @@ export class FlowEdge extends Edge {
 
   // 正交折线渲染：中间每个拐点用 arcTo 做四分之一圆弧（半径 cornerRadius，
   // 自动收缩到相邻边长一半以内），其余为水平/垂直直线段
-  private renderOrtho(ctx: CanvasRenderingContext2D, pts: EdgePoint[]) {
+  private renderOrtho(ctx: CanvasRenderingContext2D, pts: EdgePoint[], color: string) {
     const r = this.cornerRadius
-    ctx.strokeStyle = this.color
+    ctx.strokeStyle = color
     ctx.lineWidth = this.lineWidth
     ctx.beginPath()
     ctx.moveTo(pts[0].x, pts[0].y)
@@ -135,7 +151,7 @@ export class FlowEdge extends Edge {
   }
 
   // 实心三角箭头：平移到终点并按最后一段直线方向旋转后绘制
-  private drawArrow(ctx: CanvasRenderingContext2D, pts: EdgePoint[]) {
+  private drawArrow(ctx: CanvasRenderingContext2D, pts: EdgePoint[], color: string) {
     const to = pts[pts.length - 1]
     const prev = pts[pts.length - 2]
     if (prev.x === to.x && prev.y === to.y) return
@@ -147,11 +163,14 @@ export class FlowEdge extends Edge {
     ctx.lineTo(-10, 4)
     ctx.lineTo(-10, -4)
     ctx.closePath()
-    ctx.fillStyle = this.color
+    ctx.fillStyle = color
     ctx.fill()
     ctx.restore()
   }
 }
+
+// 选中态线色（与选中框同色系）
+const SELECT_COLOR = '#3b82f6'
 
 // 端口外法向单位向量（top 向上、right 向右、bottom 向下、left 向左）
 const PORT_DIR_VEC: Record<PortDir, EdgePoint> = {
@@ -163,6 +182,15 @@ const PORT_DIR_VEC: Record<PortDir, EdgePoint> = {
 
 // 出口/入口直段长度（世界坐标）：端口沿外法向引出的锁定方向段
 const PORT_STUB = 24
+
+// 点到线段的最短距离
+function distSeg(p: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }): number {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const len2 = dx * dx + dy * dy
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2))
+  return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t))
+}
 
 // 剔除相邻重复点（锚点恰好落在转折中点上时会出现），避免零长度段干扰圆弧
 function dedupe(pts: EdgePoint[]): EdgePoint[] {

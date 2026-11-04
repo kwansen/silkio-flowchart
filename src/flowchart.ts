@@ -136,7 +136,8 @@ export class FlowChart {
   private editor: TextEditorCapability
   private shapes = new Map<string, Shape>()
   private edges: FlowEdge[] = []
-  private selection: Shape | null = null
+  // 当前选中：形状或连线
+  private selection: Shape | FlowEdge | null = null
   private editing: Shape | null = null
   private session: Session | null = null
   private overlay: SelectionOverlay
@@ -169,10 +170,11 @@ export class FlowChart {
     this.overlay = new SelectionOverlay(() => {
       const scale = this.app.renderer.viewport.scale
       const dirs = ['top', 'right', 'bottom', 'left'] as const
+      const selShape = this.selShape
       return {
-        shape: this.selection,
+        shape: selShape,
         scale,
-        ports: this.selection ? dirs.map(dir => this.portPos(this.selection!, dir, scale)) : [],
+        ports: selShape ? dirs.map(dir => this.portPos(selShape, dir, scale)) : [],
         link: this.linkTarget
           ? {
               ports: dirs.map(dir => this.portPos(this.linkTarget!, dir, scale)),
@@ -201,10 +203,17 @@ export class FlowChart {
     return shape.id as string
   }
 
-  // 删除当前选中节点及其关联连线
+  // 删除当前选中（形状连同其关联连线，或单条连线）
   deleteSelected() {
-    if (!this.selection) return
-    this.removeShape(this.selection)
+    const sel = this.selection
+    if (!sel) return
+    if (sel instanceof FlowEdge) {
+      this.select(null)
+      this.removeTop(sel)
+      this.edges = this.edges.filter(e => e !== sel)
+    } else {
+      this.removeShape(sel)
+    }
     this.app.render()
     this.onChange?.('delete')
   }
@@ -274,11 +283,10 @@ export class FlowChart {
     }
   }
 
-  // 新建连线：去重（同向重复连线跳过），插入到形状层之下保证连线画在节点下方；
+  // 新建连线：两节点间可存在多条连线，不做去重限制；
+  // 插入到形状层之下保证连线画在节点下方；
   // hints 指定两端固定端口（拖拽吸附创建时传入），缺省按主导方向自动选边
   private addEdgeBetween(from: Shape, to: Shape, notify: boolean, hints?: FlowEdgeHints) {
-    const dup = this.edges.some(e => (e.fromNode === from && e.toNode === to) || (e.fromNode === to && e.toNode === from))
-    if (dup) return
     const edge = new FlowEdge(from, to, hints)
     this.edges.push(edge)
     const idx = this.app.children.findIndex(n => n instanceof Shape)
@@ -305,12 +313,26 @@ export class FlowChart {
     if (i !== -1) this.app.children.splice(i, 1)
   }
 
-  private select(shape: Shape | null) {
+  private select(shape: Shape | FlowEdge | null) {
     if (this.selection === shape) return
     if (this.selection) this.selection.selected = false
     this.selection = shape
     if (shape) shape.selected = true
     this.app.render()
+  }
+
+  // 选中的形状（选中连线时为 null）
+  private get selShape(): Shape | null {
+    return this.selection instanceof Shape ? this.selection : null
+  }
+
+  // 命中连线：距折线各段容差内命中（世界坐标容差）
+  private hitEdge(p: { x: number; y: number }, scale: number): FlowEdge | null {
+    const tol = EDGE_TOLERANCE / scale
+    for (const edge of this.edges) {
+      if (edge.hitPoint(p, tol)) return edge
+    }
+    return null
   }
   //#endregion
 
@@ -437,30 +459,29 @@ export class FlowChart {
     const p = this.toWorld(e)
     const scale = this.app.renderer.viewport.scale
     // 选中态下按优先级命中：角手柄缩放 → 端口连线 → 边线缩放 → 形状体移动
-    if (this.selection) {
-      const corner = this.cornerHit(this.selection, p, scale)
+    const sel = this.selShape
+    if (sel) {
+      const corner = this.cornerHit(sel, p, scale)
       if (corner) {
-        const s = this.selection
-        this.session = { kind: 'resize', shape: s, handle: corner, start: p, origin: { x: s.x, y: s.y, width: s.width, height: s.height } }
+        this.session = { kind: 'resize', shape: sel, handle: corner, start: p, origin: { x: sel.x, y: sel.y, width: sel.width, height: sel.height } }
         return
       }
-      const dir = this.portHit(this.selection, p, scale)
+      const dir = this.portHit(sel, p, scale)
       if (dir) {
         const preview = new LinkPreview()
-        preview.from = this.portPos(this.selection, dir, scale)
+        preview.from = this.portPos(sel, dir, scale)
         preview.to = p
         const idx = this.app.children.findIndex(n => n instanceof Shape)
         if (idx === -1) this.app.children.push(preview)
         else this.app.children.splice(idx, 0, preview)
-        this.session = { kind: 'link', source: this.selection, sourceDir: dir, preview }
+        this.session = { kind: 'link', source: sel, sourceDir: dir, preview }
         this.options.canvas.style.cursor = 'crosshair'
         this.app.render()
         return
       }
-      const side = this.edgeHit(this.selection, p, scale)
+      const side = this.edgeHit(sel, p, scale)
       if (side) {
-        const s = this.selection
-        this.session = { kind: 'resize', shape: s, handle: side, start: p, origin: { x: s.x, y: s.y, width: s.width, height: s.height } }
+        this.session = { kind: 'resize', shape: sel, handle: side, start: p, origin: { x: sel.x, y: sel.y, width: sel.width, height: sel.height } }
         return
       }
     }
@@ -468,20 +489,28 @@ export class FlowChart {
     if (hit) {
       this.select(hit)
       this.session = { kind: 'move', shape: hit, start: p, origin: { x: hit.x, y: hit.y }, moved: false }
-    } else {
-      this.session = { kind: 'blank', start: p }
+      return
     }
+    // 形状未命中时尝试命中连线（形状层在上，优先选中形状）
+    const hitLine = this.hitEdge(p, scale)
+    if (hitLine) {
+      this.select(hitLine)
+      this.app.render()
+      return
+    }
+    this.session = { kind: 'blank', start: p }
   }
 
   private onMove(e: MouseEvent) {
     const s = this.session
-    // 无会话时做悬停反馈：缩放手柄/边线/端口/形状体分别给对应光标
+    // 无会话时做悬停反馈：缩放手柄/边线/端口/形状体/连线分别给对应光标
     if (!s) {
       const p = this.toWorld(e)
       const scale = this.app.renderer.viewport.scale
-      const cursor = (this.selection && this.hoverCursor(this.selection, p, scale))
-        ?? (this.hitShape(p) ? 'move' : '')
-      this.options.canvas.style.cursor = cursor
+      let cursor = this.selShape ? this.hoverCursor(this.selShape, p, scale) : null
+      if (cursor === null) cursor = this.hitShape(p) ? 'move' : null
+      if (cursor === null) cursor = this.hitEdge(p, scale) ? 'pointer' : null
+      this.options.canvas.style.cursor = cursor ?? ''
       return
     }
     const p = this.toWorld(e)
