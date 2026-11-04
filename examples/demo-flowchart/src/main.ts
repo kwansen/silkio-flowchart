@@ -17,6 +17,8 @@ const data: FlowData = {
     { from: "handle", to: "check" },
     { from: "check", to: "ok" },
     { from: "check", to: "retry" },
+    // 演示四向端口与方向锁定：从“开始”底部竖直引出，竖直接入“返回错误”顶部
+    { from: "start", to: "retry", fromDir: "bottom", toDir: "top" },
   ],
 };
 

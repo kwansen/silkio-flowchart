@@ -16,8 +16,12 @@ export interface FlowEdgeHints {
 // 路由规则：连线从源节点四向端口（上/右/下/左边中点）之一引出，接入目标节点四向端口之一；
 // 两端端口在创建时固定（显式指定或按当时主导方向自动选边），此后节点移动/缩放
 // 只改变连线途经的折点位置，不再改变出入口端口。
-// 路径形态由两端端口方向组合决定：横出横入经 x 中点垂直转折（Z 形）、
-// 竖出竖入经 y 中点水平转折（Z 形）、横竖混搭为 L 形直角转折。
+// 出口/入口段锁定端口方向：从端口沿外法向先引出一段固定长度直段
+// （下方出口第一段必为向下竖线，上方入口最后一段必为竖线），再正交连接两端。
+// 中段形态由两端端口方向组合决定：同轴且顺畅（下出上入 / 上出下入、右出左入 / 左出右入）
+// 为三段 Z 形；同轴绕行（同侧出入或目标位于反侧，如下出上入但入口位高于出口位）
+// 为五段 S 形——先下、再右、再上、再右、再下，不产生折返锯齿；
+// 横竖混搭为 L 形直角转折，按进入方向选择先横后竖或先竖后横。
 export class FlowEdge extends Edge {
   fromNode: Shape
   toNode: Shape
@@ -54,24 +58,52 @@ export class FlowEdge extends Edge {
     this.drawArrow(ctx, pts)
   }
 
-  // 生成正交路径点（含起止锚点与 1 个转折中点，相邻重复点已剔除）。
-  // 端口方向在创建时已固定，按方向组合选 Z 形或 L 形
+  // 生成正交路径点（相邻重复点已剔除）。
+  // 首段沿源端口外法向、末段沿目标端口外法向反向进入，方向锁定；
+  // 中段按方向组合与相对位置选 Z 形（顺畅）或 S 形（绕行，无折返）
   private route(): EdgePoint[] {
     const s = this.fromNode.portAt(this.fromDir)
     const t = this.toNode.portAt(this.toDir)
-    const horiz = (d: PortDir) => d === 'left' || d === 'right'
-    if (horiz(this.fromDir) && horiz(this.toDir)) {
-      // 横出横入：经 x 中点垂直转折的 Z 形
-      const mx = (s.x + t.x) / 2
-      return dedupe([s, { x: mx, y: s.y }, { x: mx, y: t.y }, t])
+    const fv = PORT_DIR_VEC[this.fromDir]
+    const tv = PORT_DIR_VEC[this.toDir]
+    // 沿外法向引出固定长度直段，保证出口/入口段方向始终与端口方向一致
+    const s2 = { x: s.x + fv.x * PORT_STUB, y: s.y + fv.y * PORT_STUB }
+    const t2 = { x: t.x + tv.x * PORT_STUB, y: t.y + tv.y * PORT_STUB }
+    const fh = fv.x !== 0
+    const th = tv.x !== 0
+    if (fh && th) {
+      // 横出横入：右→左 / 左→右 且整体前进方向一致时走竖向中转 Z 形；
+      // 否则（同侧出入或目标在反侧）走横向中转的 S 形绕行，避免折返
+      const d = t2.x - s2.x
+      if (d * fv.x >= 0 && d * -tv.x >= 0) {
+        const mx = (s2.x + t2.x) / 2
+        return dedupe([s, s2, { x: mx, y: s2.y }, { x: mx, y: t2.y }, t2, t])
+      }
+      const my = (s2.y + t2.y) / 2
+      return dedupe([s, s2, { x: s2.x, y: my }, { x: t2.x, y: my }, t2, t])
     }
-    if (!horiz(this.fromDir) && !horiz(this.toDir)) {
-      // 竖出竖入：经 y 中点水平转折的 Z 形
-      const my = (s.y + t.y) / 2
-      return dedupe([s, { x: s.x, y: my }, { x: t.x, y: my }, t])
+    if (!fh && !th) {
+      // 竖出竖入：下→上 / 上→下且整体前进方向一致时走横向中转 Z 形；
+      // 否则（如下出上入但入口位高于出口位）走竖向中转 S 形：下、右、上、右、下
+      const d = t2.y - s2.y
+      if (d * fv.y >= 0 && d * -tv.y >= 0) {
+        const my = (s2.y + t2.y) / 2
+        return dedupe([s, s2, { x: s2.x, y: my }, { x: t2.x, y: my }, t2, t])
+      }
+      const mx = (s2.x + t2.x) / 2
+      return dedupe([s, s2, { x: mx, y: s2.y }, { x: mx, y: t2.y }, t2, t])
     }
-    // 横出竖入 / 竖出横入：L 形，转折点在两段正交方向线的交点
-    return dedupe(horiz(this.fromDir) ? [s, { x: t.x, y: s.y }, t] : [s, { x: s.x, y: t.y }, t])
+    // 横出竖入 / 竖出横入：L 形，按末段进入方向选择转折顺序，避免与进入段折返
+    if (fh) {
+      const d = t2.y - s2.y
+      return dedupe(d * -tv.y >= 0
+        ? [s, s2, { x: t2.x, y: s2.y }, t2, t]   // 先横后竖：水平段与进入段同向衔接
+        : [s, s2, { x: s2.x, y: t2.y }, t2, t])  // 先竖后横
+    }
+    const d = t2.x - s2.x
+    return dedupe(d * -tv.x >= 0
+      ? [s, s2, { x: s2.x, y: t2.y }, t2, t]     // 先竖后横：竖直段与进入段同向衔接
+      : [s, s2, { x: t2.x, y: s2.y }, t2, t])    // 先横后竖
   }
 
   // 正交折线渲染：中间每个拐点用 arcTo 做四分之一圆弧（半径 cornerRadius，
@@ -120,6 +152,17 @@ export class FlowEdge extends Edge {
     ctx.restore()
   }
 }
+
+// 端口外法向单位向量（top 向上、right 向右、bottom 向下、left 向左）
+const PORT_DIR_VEC: Record<PortDir, EdgePoint> = {
+  top: { x: 0, y: -1 },
+  right: { x: 1, y: 0 },
+  bottom: { x: 0, y: 1 },
+  left: { x: -1, y: 0 },
+}
+
+// 出口/入口直段长度（世界坐标）：端口沿外法向引出的锁定方向段
+const PORT_STUB = 24
 
 // 剔除相邻重复点（锚点恰好落在转折中点上时会出现），避免零长度段干扰圆弧
 function dedupe(pts: EdgePoint[]): EdgePoint[] {
