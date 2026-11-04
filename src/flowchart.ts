@@ -1071,6 +1071,7 @@ export class FlowChart {
     this.options.canvas.style.cursor = ''
     if (s.kind === 'move') {
       this.guides = null
+      this.app.render() // 清除参考线后立即重绘，否则画面残留拖拽时最后一帧
       if (s.moved) this.onChange?.('move')
     } else if (s.kind === 'resize') {
       const o = s.origin
