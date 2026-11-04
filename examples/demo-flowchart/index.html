@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Flowchart Demo</title>
+  <style>
+    * {
+      padding: 0;
+      margin: 0;
+      box-sizing: border-box;
+    }
+
+    #canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      background-color: #fafafa;
+    }
+
+    #toolbar {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      display: flex;
+      gap: 8px;
+      z-index: 10;
+      align-items: center;
+    }
+
+    #toolbar button {
+      padding: 6px 14px;
+      font-size: 14px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      background-color: #ffffff;
+      color: #1f2937;
+      cursor: pointer;
+    }
+
+    #toolbar button:hover {
+      background-color: #f3f4f6;
+    }
+
+    #hint {
+      position: fixed;
+      bottom: 16px;
+      left: 16px;
+      padding: 8px 12px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: #6b7280;
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      z-index: 10;
+      user-select: none;
+    }
+  </style>
+</head>
+
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="toolbar">
+    <button id="add-rect">＋ 矩形</button>
+    <button id="add-diamond">＋ 菱形</button>
+    <button id="add-ellipse">＋ 椭圆</button>
+    <button id="delete-btn">删除选中</button>
+    <button id="fit-btn">适应视图</button>
+    <button id="export-btn">导出 JSON</button>
+  </div>
+  <div id="hint">
+    点击选中 · 拖拽移动 · 双击编辑文字 · 选中后拖动蓝色圆点连线 · Delete 删除 · 滚轮缩放 · 右键拖拽平移
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+
+</html>

@@ -1,0 +1,25 @@
+{
+  "name": "@silker/flowchart",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@silker/core": "workspace:*",
+    "@silker/core-viewport": "workspace:*",
+    "@silker/plugin-edge": "workspace:*",
+    "@silker/plugin-text-editor": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.2"
+  }
+}
