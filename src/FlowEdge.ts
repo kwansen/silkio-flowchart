@@ -61,8 +61,25 @@ export class FlowEdge extends Edge {
     this.update()
     const pts = this.route()
     const color = this.selected ? SELECT_COLOR : this.color
-    this.renderOrtho(ctx, pts, color)
+    // 线体末端回缩一个箭头长度再绘制，避免线头从三角箭头下方露出
+    this.renderOrtho(ctx, this.trimForArrow(pts), color)
     this.drawArrow(ctx, pts, color)
+  }
+
+  // 返回末端沿最后一段回缩 ARROW_LEN 的折线副本（回缩量不超过该段长度）
+  private trimForArrow(pts: EdgePoint[]): EdgePoint[] {
+    const n = pts.length
+    if (n < 2) return pts
+    const to = pts[n - 1]
+    const prev = pts[n - 2]
+    const dx = to.x - prev.x
+    const dy = to.y - prev.y
+    const len = Math.hypot(dx, dy)
+    if (len === 0) return pts
+    const back = Math.min(ARROW_LEN, len)
+    const out = pts.slice()
+    out[n - 1] = { x: to.x - (dx / len) * back, y: to.y - (dy / len) * back }
+    return out
   }
 
   // 命中检测：点到折线各段的最近距离是否在容差内（世界坐标）
@@ -181,8 +198,8 @@ export class FlowEdge extends Edge {
     ctx.rotate(Math.atan2(to.y - prev.y, to.x - prev.x))
     ctx.beginPath()
     ctx.moveTo(0, 0)
-    ctx.lineTo(-10, 4)
-    ctx.lineTo(-10, -4)
+    ctx.lineTo(-ARROW_LEN, 4)
+    ctx.lineTo(-ARROW_LEN, -4)
     ctx.closePath()
     ctx.fillStyle = color
     ctx.fill()
@@ -192,6 +209,9 @@ export class FlowEdge extends Edge {
 
 // 选中态线色（与选中框同色系）
 const SELECT_COLOR = '#3b82f6'
+
+// 箭头长度（三角沿行进方向的底边到尖端距离），线体末端按此回缩
+const ARROW_LEN = 10
 
 // 端口外法向单位向量（top 向上、right 向右、bottom 向下、left 向左）
 const PORT_DIR_VEC: Record<PortDir, EdgePoint> = {
