@@ -196,8 +196,9 @@ export class FlowChart {
           : [],
         link: this.linkTarget
           ? {
-              ports: dirs.map(dir => this.portPos(this.linkTarget!, dir, scale)),
-              active: this.linkSnap ? this.portPos(this.linkTarget, this.linkSnap, scale) : null,
+              // 对接手柄位于节点边缘的实际连接点（与连线端口/预览吸附一致）
+              ports: dirs.map(dir => this.linkTarget!.portAt(dir)),
+              active: this.linkSnap ? this.linkTarget.portAt(this.linkSnap) : null,
             }
           : null,
       }
@@ -607,8 +608,9 @@ export class FlowChart {
       this.app.render()
     } else if (s.kind === 'edge-move') {
       // 原连线被拖端跟随光标：吸附时落在目标手柄上，自由拖拽时按出口方向
-      // 与光标位置确定虚拟进入方向（重接目标排除本连线两端节点，不支持自环）
-      this.updateLinkTarget(p, [s.edge.fromNode, s.edge.toNode])
+      // 与光标位置确定虚拟进入方向。两端节点同样可吸附（便于调整接入边），
+      // 仅排除被拖端对侧的节点（重接到它将形成自环）
+      this.updateLinkTarget(p, [s.which === 'from' ? s.edge.toNode : s.edge.fromNode])
       if (this.linkTarget && this.linkSnap) {
         s.edge.dragPoint = this.linkTarget.portAt(this.linkSnap)
         s.edge.dragDir = this.linkSnap
@@ -699,7 +701,8 @@ export class FlowChart {
       this.linkTarget = null
       this.linkSnap = null
       const hit = target ?? this.hitShape(this.toWorld(e))
-      if (hit && hit !== s.edge.fromNode && hit !== s.edge.toNode) {
+      const selfLoop = s.which === 'from' ? s.edge.toNode : s.edge.fromNode
+      if (hit && hit !== selfLoop) {
         s.edge.reattachEnd(s.which, hit, target && snap ? snap : undefined)
         this.onChange?.('reconnect')
       }
