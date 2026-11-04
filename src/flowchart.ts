@@ -920,6 +920,21 @@ export class FlowChart {
             out.push({ x1: L.x + L.width, y1: midY, x2: shape.x, y2: midY, value: a })
           }
         }
+      } else if (R) {
+        // 外侧等间距（拖拽节点在左）：把 R 右侧的既有间距一并画出
+        let RR: Shape | null = null
+        for (const o of band) {
+          if (o === R) continue
+          if (o.x >= R.x + R.width && (!RR || o.x < RR.x)) RR = o
+        }
+        if (RR) {
+          const g = RR.x - (R.x + R.width)
+          const a = R.x - (shape.x + shape.width)
+          if (g > 0 && a > 0 && (Math.abs(a - g) <= tol || Math.abs(a - modeX) <= tol)) {
+            out.push({ x1: shape.x + shape.width, y1: midY, x2: R.x, y2: midY, value: a })
+            out.push({ x1: R.x + R.width, y1: R.y + R.height / 2, x2: RR.x, y2: R.y + R.height / 2, value: g })
+          }
+        }
       }
     }
     if (!skipY) {
@@ -1006,6 +1021,21 @@ export class FlowChart {
           if (g > 0 && a > 0 && (Math.abs(a - g) <= tol || Math.abs(a - modeY) <= tol)) {
             out.push({ x1: T.x + T.width / 2, y1: TT.y + TT.height, x2: T.x + T.width / 2, y2: T.y, value: g })
             out.push({ x1: midX, y1: T.y + T.height, x2: midX, y2: shape.y, value: a })
+          }
+        }
+      } else if (B) {
+        // 外侧等间距（拖拽节点在上）：把 B 下方的既有间距一并画出
+        let BB: Shape | null = null
+        for (const o of band) {
+          if (o === B) continue
+          if (o.y >= B.y + B.height && (!BB || o.y < BB.y)) BB = o
+        }
+        if (BB) {
+          const g = BB.y - (B.y + B.height)
+          const a = B.y - (shape.y + shape.height)
+          if (g > 0 && a > 0 && (Math.abs(a - g) <= tol || Math.abs(a - modeY) <= tol)) {
+            out.push({ x1: midX, y1: shape.y + shape.height, x2: midX, y2: B.y, value: a })
+            out.push({ x1: B.x + B.width / 2, y1: B.y + B.height, x2: B.x + B.width / 2, y2: BB.y, value: g })
           }
         }
       }
