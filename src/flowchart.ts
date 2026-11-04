@@ -5,6 +5,7 @@ import type { TextEditorCapability } from '@silker/plugin-text-editor'
 import { createShape } from './shapes'
 import { Shape } from './Shape'
 import { FlowEdge } from './FlowEdge'
+import type { FlowEdgeHints, PortDir } from './FlowEdge'
 import type { FlowChangeType, FlowData, ShapeKind } from './data'
 
 // 端口命中半径（世界坐标）
@@ -16,6 +17,13 @@ const HANDLE_SIZE = 9      // 四角手柄边长（屏幕像素）
 const HANDLE_HIT = 8       // 手柄命中半径（屏幕像素）
 const EDGE_TOLERANCE = 5   // 边线命中容差（屏幕像素）
 const MIN_SIZE = 20        // 缩放最小尺寸（世界坐标）
+
+// 连线端口圆点外观：沿边中点外法向浮在形状外侧，不遮挡边线与箭头
+const PORT_RADIUS = 5      // 端口圆点半径（屏幕像素）
+const PORT_OFFSET = 12     // 端口圆点圆心相对边中点向外的偏移（屏幕像素）
+
+// 连线拖拽吸附：光标进入目标节点包围盒外扩该范围时，目标节点浮出对接手柄
+const LINK_SNAP_MARGIN = 16 // 吸附感应范围（屏幕像素）
 
 // 缩放手柄方位：四角 + 四边
 type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
@@ -42,33 +50,64 @@ class LinkPreview extends Node {
   }
 }
 
-// 选中框覆盖层：为选中形状绘制 bounds 边框与四角缩放手柄，
-// 手柄尺寸按视口缩放反算，保证任何缩放级别下都是恒定屏幕像素大小
+// 选中框覆盖层：为选中形状绘制 bounds 边框、四角缩放手柄与外浮的连线端口圆点，
+// 连线拖拽时为目标节点绘制对接手柄并高亮吸附端口，
+// 尺寸按视口缩放反算，保证任何缩放级别下都是恒定屏幕像素大小
 class SelectionOverlay extends Node {
-  constructor(private getState: () => { shape: Shape | null; scale: number }) {
+  constructor(private getState: () => {
+    shape: Shape | null
+    scale: number
+    ports: Array<{ x: number; y: number }>
+    // 连线拖拽中的目标节点：ports 为其四个对接手柄，active 为吸附中的手柄
+    link: { ports: Array<{ x: number; y: number }>; active: { x: number; y: number } | null } | null
+  }) {
     super()
   }
 
   render(ctx: CanvasRenderingContext2D) {
-    const { shape, scale } = this.getState()
-    if (!shape) return
+    const { shape, scale, ports, link } = this.getState()
     const k = 1 / scale
-    const { x, y, width: w, height: h } = shape
     ctx.save()
-    // bounds 边框
-    ctx.strokeStyle = SELECT_COLOR
-    ctx.lineWidth = 1.5 * k
-    ctx.strokeRect(x, y, w, h)
-    // 四角手柄（白底蓝边方块）
-    const s = HANDLE_SIZE * k
-    for (const [cx, cy] of [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]) {
-      ctx.beginPath()
-      ctx.rect(cx - s / 2, cy - s / 2, s, s)
-      ctx.fillStyle = '#ffffff'
-      ctx.fill()
-      ctx.stroke()
+    if (shape) {
+      const { x, y, width: w, height: h } = shape
+      // bounds 边框
+      ctx.strokeStyle = SELECT_COLOR
+      ctx.lineWidth = 1.5 * k
+      ctx.strokeRect(x, y, w, h)
+      // 四角手柄（白底蓝边方块）
+      const s = HANDLE_SIZE * k
+      for (const [cx, cy] of [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]) {
+        ctx.beginPath()
+        ctx.rect(cx - s / 2, cy - s / 2, s, s)
+        ctx.fillStyle = '#ffffff'
+        ctx.fill()
+        ctx.stroke()
+      }
+      // 四向连线端口圆点（浮在形状外侧）
+      this.drawPorts(ctx, ports, k, null)
     }
+    // 连线拖拽目标：浮出对接手柄，吸附中的手柄实心高亮
+    if (link) this.drawPorts(ctx, link.ports, k, link.active)
     ctx.restore()
+  }
+
+  // 绘制端口圆点：active 非空时该位置的圆点改为实心蓝（吸附高亮）
+  private drawPorts(ctx: CanvasRenderingContext2D, pts: Array<{ x: number; y: number }>, k: number, active: { x: number; y: number } | null) {
+    ctx.strokeStyle = SELECT_COLOR
+    for (const p of pts) {
+      const isActive = active && active.x === p.x && active.y === p.y
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, PORT_RADIUS * k, 0, Math.PI * 2)
+      if (isActive) {
+        ctx.fillStyle = SELECT_COLOR
+        ctx.fill()
+      } else {
+        ctx.fillStyle = '#ffffff'
+        ctx.fill()
+        ctx.lineWidth = 1.5 * k
+        ctx.stroke()
+      }
+    }
   }
 
   hitTest() {
@@ -88,7 +127,7 @@ type Session =
   | { kind: 'move'; shape: Shape; start: { x: number; y: number }; origin: { x: number; y: number }; moved: boolean }
   | { kind: 'resize'; shape: Shape; handle: ResizeHandle; start: { x: number; y: number }; origin: { x: number; y: number; width: number; height: number } }
   | { kind: 'blank'; start: { x: number; y: number } }
-  | { kind: 'link'; source: Shape; preview: LinkPreview }
+  | { kind: 'link'; source: Shape; sourceDir: PortDir; preview: LinkPreview }
 
 // 流程图场景门面：组装视口 / 文本编辑插件，持有形状与连线模型，
 // 内置交互：点选、拖拽移动、双击编辑文字、端口拖拽连线、Delete 删除
@@ -101,6 +140,9 @@ export class FlowChart {
   private editing: Shape | null = null
   private session: Session | null = null
   private overlay: SelectionOverlay
+  // 连线拖拽吸附状态：接近中的目标节点与吸附中的端口方向
+  private linkTarget: Shape | null = null
+  private linkSnap: PortDir | null = null
   private onChange?: (type: FlowChangeType) => void
   private cleanups: Array<() => void> = []
 
@@ -124,7 +166,21 @@ export class FlowChart {
     this.editor = editor
     this.load(options.data)
     // 选中框覆盖层置于最上层（registerShape 追加新节点后需 raiseOverlay 保持）
-    this.overlay = new SelectionOverlay(() => ({ shape: this.selection, scale: this.app.renderer.viewport.scale }))
+    this.overlay = new SelectionOverlay(() => {
+      const scale = this.app.renderer.viewport.scale
+      const dirs = ['top', 'right', 'bottom', 'left'] as const
+      return {
+        shape: this.selection,
+        scale,
+        ports: this.selection ? dirs.map(dir => this.portPos(this.selection!, dir, scale)) : [],
+        link: this.linkTarget
+          ? {
+              ports: dirs.map(dir => this.portPos(this.linkTarget!, dir, scale)),
+              active: this.linkSnap ? this.portPos(this.linkTarget, this.linkSnap, scale) : null,
+            }
+          : null,
+      }
+    })
     this.app.add(this.overlay)
     this.bindEvents(options.canvas)
   }
@@ -213,11 +269,12 @@ export class FlowChart {
     }
   }
 
-  // 新建连线：去重（同向重复连线跳过），插入到形状层之下保证连线画在节点下方
-  private addEdgeBetween(from: Shape, to: Shape, notify: boolean) {
+  // 新建连线：去重（同向重复连线跳过），插入到形状层之下保证连线画在节点下方；
+  // hints 指定两端固定端口（拖拽吸附创建时传入），缺省按主导方向自动选边
+  private addEdgeBetween(from: Shape, to: Shape, notify: boolean, hints?: FlowEdgeHints) {
     const dup = this.edges.some(e => (e.fromNode === from && e.toNode === to) || (e.fromNode === to && e.toNode === from))
     if (dup) return
-    const edge = new FlowEdge(from, to)
+    const edge = new FlowEdge(from, to, hints)
     this.edges.push(edge)
     const idx = this.app.children.findIndex(n => n instanceof Shape)
     if (idx === -1) this.app.children.push(edge)
@@ -301,10 +358,19 @@ export class FlowChart {
     return null
   }
 
-  // 端口命中：返回命中的方向，未命中返回 null
-  private portHit(shape: Shape, p: { x: number; y: number }) {
+  // 端口显示位置：边中点沿外法向偏移 PORT_OFFSET 屏幕像素（圆点浮在形状外侧）。
+  // 节点描边为 border-box（画在尺寸内部、外缘即几何边界），圆点与可见边线的间距恒定
+  private portPos(shape: Shape, dir: 'top' | 'right' | 'bottom' | 'left', scale: number) {
+    const port = shape.portAt(dir)
+    const off = PORT_OFFSET / scale
+    const d = { top: { x: 0, y: -1 }, right: { x: 1, y: 0 }, bottom: { x: 0, y: 1 }, left: { x: -1, y: 0 } }[dir]
+    return { x: port.x + d.x * off, y: port.y + d.y * off }
+  }
+
+  // 端口命中：返回命中的方向，未命中返回 null（按外浮后的圆点位置判定）
+  private portHit(shape: Shape, p: { x: number; y: number }, scale: number) {
     for (const dir of ['top', 'right', 'bottom', 'left'] as const) {
-      const port = shape.portAt(dir)
+      const port = this.portPos(shape, dir, scale)
       if (Math.hypot(p.x - port.x, p.y - port.y) <= PORT_HIT_RADIUS) return dir
     }
     return null
@@ -357,7 +423,7 @@ export class FlowChart {
     if (corner) return corner === 'nw' || corner === 'se' ? 'nwse-resize' : 'nesw-resize'
     const side = this.edgeHit(shape, p, scale)
     if (side) return side === 'n' || side === 's' ? 'ns-resize' : 'ew-resize'
-    if (this.portHit(shape, p)) return 'crosshair'
+    if (this.portHit(shape, p, scale)) return 'crosshair'
     return null
   }
 
@@ -373,15 +439,15 @@ export class FlowChart {
         this.session = { kind: 'resize', shape: s, handle: corner, start: p, origin: { x: s.x, y: s.y, width: s.width, height: s.height } }
         return
       }
-      const dir = this.portHit(this.selection, p)
+      const dir = this.portHit(this.selection, p, scale)
       if (dir) {
         const preview = new LinkPreview()
-        preview.from = this.selection.portAt(dir)
+        preview.from = this.portPos(this.selection, dir, scale)
         preview.to = p
         const idx = this.app.children.findIndex(n => n instanceof Shape)
         if (idx === -1) this.app.children.push(preview)
         else this.app.children.splice(idx, 0, preview)
-        this.session = { kind: 'link', source: this.selection, preview }
+        this.session = { kind: 'link', source: this.selection, sourceDir: dir, preview }
         this.options.canvas.style.cursor = 'crosshair'
         this.app.render()
         return
@@ -423,8 +489,36 @@ export class FlowChart {
       this.applyResize(s, p.x - s.start.x, p.y - s.start.y)
       this.app.render()
     } else if (s.kind === 'link') {
-      s.preview.to = p
+      this.updateLinkTarget(s, p)
+      // 吸附时预览线末端跟随目标节点的对接手柄
+      s.preview.to = this.linkTarget && this.linkSnap
+        ? this.portPos(this.linkTarget, this.linkSnap, this.app.renderer.viewport.scale)
+        : p
       this.app.render()
+    }
+  }
+
+  // 连线拖拽中更新吸附目标：光标进入某节点包围盒外扩 LINK_SNAP_MARGIN 范围时，
+  // 该节点成为目标（浮出对接手柄），并吸附到距光标最近的端口
+  private updateLinkTarget(s: Extract<Session, { kind: 'link' }>, p: { x: number; y: number }) {
+    const scale = this.app.renderer.viewport.scale
+    const m = LINK_SNAP_MARGIN / scale
+    this.linkTarget = null
+    this.linkSnap = null
+    for (const shape of this.shapes.values()) {
+      if (shape === s.source) continue
+      if (p.x < shape.x - m || p.x > shape.x + shape.width + m || p.y < shape.y - m || p.y > shape.y + shape.height + m) continue
+      this.linkTarget = shape
+      let best = Infinity
+      for (const dir of ['top', 'right', 'bottom', 'left'] as const) {
+        const q = this.portPos(shape, dir, scale)
+        const d = Math.hypot(p.x - q.x, p.y - q.y)
+        if (d < best) {
+          best = d
+          this.linkSnap = dir
+        }
+      }
+      break
     }
   }
 
@@ -464,10 +558,18 @@ export class FlowChart {
     } else if (s.kind === 'blank') {
       this.select(null)
     } else {
-      // 连线拖拽结束：移除预览，落点命中形状则建边
+      // 连线拖拽结束：移除预览；吸附中的目标按其端口固定创建连线，否则按落点命中建边
       this.removeTop(s.preview)
-      const hit = this.hitShape(this.toWorld(e))
-      if (hit && hit !== s.source) this.addEdgeBetween(s.source, hit, true)
+      const target = this.linkTarget
+      const snap = this.linkSnap
+      this.linkTarget = null
+      this.linkSnap = null
+      if (target && snap) {
+        this.addEdgeBetween(s.source, target, true, { from: s.sourceDir, to: snap })
+      } else {
+        const hit = this.hitShape(this.toWorld(e))
+        if (hit && hit !== s.source) this.addEdgeBetween(s.source, hit, true)
+      }
       this.app.render()
     }
   }

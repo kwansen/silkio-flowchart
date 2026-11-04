@@ -27,10 +27,6 @@ export interface ShapeOptions extends NodeOptions {
   style?: Partial<ShapeStyle>
 }
 
-// 选中态描边与端口颜色（两态：普通边界 / 选中高亮）
-const SELECT_COLOR = '#3b82f6'
-const PORT_RADIUS = 5
-
 // 流程图形状基类：容器 Node，内嵌居中 Text 子节点。
 // 子类只负责三件事：drawPath（边界路径）、contains（命中判定）、
 // boundaryT（中心到边界的方向系数），锚点/端口/选中态/文字居中由基类统一处理。
@@ -38,7 +34,7 @@ export abstract class Shape extends Node {
   readonly kind: ShapeKind
   style: ShapeStyle
   text: Text
-  // 选中态：绘制高亮描边与四个端口圆点（由 FlowChart 维护）
+  // 选中态标志（由 FlowChart 维护；选中视觉——bounds 框/手柄/端口——由其覆盖层绘制）
   selected = false
 
   constructor(kind: ShapeKind, defaults: { width: number; height: number }, options: ShapeOptions = {}) {
@@ -121,30 +117,19 @@ export abstract class Shape extends Node {
       ctx.fillStyle = fill
       ctx.fill()
     }
+    // border-box 语义：描边完全画在节点尺寸内部，宽度不改变节点整体大小
+    //（裁剪到形状路径后以 2 倍线宽描边，外半被裁掉，可见部分恰好是内侧 lineWidth）
     if (stroke) {
-      ctx.strokeStyle = stroke
-      ctx.lineWidth = lineWidth
-      ctx.stroke()
-    }
-    if (this.selected) this.drawSelection(ctx)
-  }
-
-  // 选中态：高亮描边 + 四个端口圆点
-  private drawSelection(ctx: CanvasRenderingContext2D) {
-    ctx.beginPath()
-    this.drawPath(ctx)
-    ctx.strokeStyle = SELECT_COLOR
-    ctx.lineWidth = 2
-    ctx.stroke()
-    for (const dir of ['top', 'right', 'bottom', 'left'] as const) {
-      const p = { top: { x: this.width / 2, y: 0 }, right: { x: this.width, y: this.height / 2 }, bottom: { x: this.width / 2, y: this.height }, left: { x: 0, y: this.height / 2 } }[dir]
+      ctx.save()
       ctx.beginPath()
-      ctx.arc(p.x, p.y, PORT_RADIUS, 0, Math.PI * 2)
-      ctx.fillStyle = '#ffffff'
-      ctx.fill()
-      ctx.strokeStyle = SELECT_COLOR
-      ctx.lineWidth = 1.5
+      this.drawPath(ctx)
+      ctx.clip()
+      ctx.beginPath()
+      this.drawPath(ctx)
+      ctx.strokeStyle = stroke
+      ctx.lineWidth = lineWidth * 2
       ctx.stroke()
+      ctx.restore()
     }
   }
   //#endregion
