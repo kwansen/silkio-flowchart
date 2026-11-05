@@ -7,6 +7,8 @@ import { Shape } from './Shape'
 import { FlowEdge, OPPOSITE_DIR, PORT_DIR_VEC, renderEdgePreview } from './FlowEdge'
 import type { FlowEdgeHints, PortDir } from './FlowEdge'
 import type { FlowChangeType, FlowData, ShapeKind } from './data'
+import { computeSnap } from './snap'
+import type { Bounds, SnapGuides } from './snap'
 
 // 端口命中半径（世界坐标）
 const PORT_HIT_RADIUS = 10
@@ -31,14 +33,8 @@ const SNAP_TOLERANCE = 3      // 对齐吸附阈值（屏幕像素），过大�
 const ALIGN_COLOR = '#f43f5e' // 对齐参考线颜色
 const SPACING_TOLERANCE = 4   // 等间距吸附阈值（屏幕像素）
 
-// 等间距测量线段：起止点（世界坐标）与间距值
-interface SpacingGuide { x1: number; y1: number; x2: number; y2: number; value: number }
-
 // 缩放手柄方位：四角 + 四边
 type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
-
-// 矩形包围盒（世界坐标）：框选矩形与多选组合 bounds
-type Bounds = { x: number; y: number; width: number; height: number }
 
 // 连线拖拽预览：与正式连线同款式的正交折线 + 箭头（from 为固定端端口及其方向，
 // to 为光标或吸附端端口；toDir 随光标相对出口端口的位置实时变化）
@@ -73,7 +69,7 @@ class SelectionOverlay extends Node {
     link: { ports: Array<{ x: number; y: number }>; active: { x: number; y: number } | null } | null
     // 节点拖拽对齐参考线：v 为竖线 x 坐标、h 为横线 y 坐标（世界坐标），
     // spacing 为等间距测量线段
-    guides: { v: number[]; h: number[]; spacing: SpacingGuide[] } | null
+    guides: SnapGuides | null
     // 框选矩形（拖拽中）或多选组合 bounds（落定后），样式与单选框一致
     marquee: Bounds | null
     // 左键拖拽中的框选矩形：半透明纯矩形，无手柄（同思维导图 Marquee 样式）
@@ -265,7 +261,7 @@ export class FlowChart {
   private linkTarget: Shape | null = null
   private linkSnap: PortDir | null = null
   // 节点拖拽对齐参考线（applySnap/applySpacingSnap 更新，拖拽结束清除）
-  private guides: { v: number[]; h: number[]; spacing: SpacingGuide[] } | null = null
+  private guides: SnapGuides | null = null
   private onChange?: (type: FlowChangeType) => void
   private cleanups: Array<() => void> = []
 
@@ -889,314 +885,21 @@ export class FlowChart {
     }
   }
 
-  // 节点拖拽吸附：对 bounds 载体（单形状，或多选组合的并集框）做吸附——
-  // 等间距吸附优先——某轴发生等间距吸附后该轴不再做对齐吸附，
-  // 避免两类吸附点相邻时（如间距 40px 恰与中线对齐差 1px）来回切换产生抖动；
-  // 对齐吸附仅同类型基准配对——左对左、中对中、右对右（上/中/下同理），取各类
-  // 最小差值做吸附平移；第二遍收集吸附后所有阈值内已对齐的基准（等宽节点上下
-  // 对齐时中线随之对齐，跳过中线参考线）；吸附平移直接写入载体坐标
+  // 节点拖拽吸附：候选参考目标 = 除被拖载体（单形状）与组内成员（组合拖拽）
+  // 之外的全部形状；吸附算法在 snap.ts 纯函数 computeSnap 中实现，
+  // 这里只负责按视口缩放折算容差、筛选候选、把位移写回载体
   private applySnap(shape: Bounds, exclude: Set<Shape> | null = null) {
     const scale = this.app.renderer.viewport.scale
-    const tol = SNAP_TOLERANCE / scale
-    const spacing = this.applySpacingSnap(shape, false, false, exclude)
-    const skipX = spacing.snappedX
-    const skipY = spacing.snappedY
-    const xs = () => [shape.x, shape.x + shape.width / 2, shape.x + shape.width]
-    const ys = () => [shape.y, shape.y + shape.height / 2, shape.y + shape.height]
-    let bestX: { d: number; shift: number } | null = null
-    let bestY: { d: number; shift: number } | null = null
-    for (const other of this.shapes.values()) {
-      if (other === shape || (exclude && exclude.has(other))) continue
-      const oxs = [other.x, other.x + other.width / 2, other.x + other.width]
-      const oys = [other.y, other.y + other.height / 2, other.y + other.height]
-      for (let i = 0; i < 3; i++) {
-        if (!skipX) {
-          const d = Math.abs(oxs[i] - xs()[i])
-          if (d <= tol && (!bestX || d < bestX.d)) bestX = { d, shift: oxs[i] - xs()[i] }
-        }
-        if (!skipY) {
-          const dy = Math.abs(oys[i] - ys()[i])
-          if (dy <= tol && (!bestY || dy < bestY.d)) bestY = { d: dy, shift: oys[i] - ys()[i] }
-        }
-      }
-    }
-    if (bestX) shape.x += bestX.shift
-    if (bestY) shape.y += bestY.shift
-    // 吸附后收集所有已对齐基准（去重，仍仅同类型配对）
-    const v = new Set<number>()
-    const h = new Set<number>()
-    const vSkip = new Set<number>()
-    const hSkip = new Set<number>()
-    for (const other of this.shapes.values()) {
-      if (other === shape || (exclude && exclude.has(other))) continue
-      const oxs = [other.x, other.x + other.width / 2, other.x + other.width]
-      const oys = [other.y, other.y + other.height / 2, other.y + other.height]
-      for (let i = 0; i < 3; i++) {
-        if (Math.abs(oxs[i] - xs()[i]) <= tol) v.add(oxs[i])
-        if (Math.abs(oys[i] - ys()[i]) <= tol) h.add(oys[i])
-      }
-      // 左右两边都已对齐时宽度必然相等、中线随之对齐，跳过中线参考线（上下同理）
-      if (Math.abs(oxs[0] - xs()[0]) <= tol && Math.abs(oxs[2] - xs()[2]) <= tol) vSkip.add(oxs[1])
-      if (Math.abs(oys[0] - ys()[0]) <= tol && Math.abs(oys[2] - ys()[2]) <= tol) hSkip.add(oys[1])
-    }
-    for (const m of vSkip) v.delete(m)
-    for (const m of hSkip) h.delete(m)
-    this.guides = v.size || h.size || spacing.guides.length
-      ? { v: [...v], h: [...h], spacing: spacing.guides }
-      : null
-  }
-
-  // 节点拖拽等间距（主流画板做法）：
-  // 1. 轴线投影过滤——仅与拖拽节点在另一轴上重叠（含少量容差）的节点参与计算，
-  //    远处行/列夹杂的零碎间距不进入间距池；
-  // 2. 高频间距锁定——投影带内相邻节点的间隙聚类取众数（至少出现 2 次），
-  //    接近众数时直接磁吸到该间距，孤立、不规则的间距不产生吸附力；
-  // 3. 两侧邻居间隙相等时平分差值；仅一侧有邻居时复现既有间距。
-  // 返回绘制用的测量线段，以及两轴是否发生了吸附
-  // （skipX/skipY 用于跳过对应轴；调用方以间距吸附结果决定对齐吸附是否生效）
-  private applySpacingSnap(shape: Bounds, skipX: boolean, skipY: boolean, exclude: Set<Shape> | null = null): {
-    guides: SpacingGuide[]; snappedX: boolean; snappedY: boolean
-  } {
-    const tol = SPACING_TOLERANCE / this.app.renderer.viewport.scale
-    const out: SpacingGuide[] = []
-    let snappedX = false
-    let snappedY = false
-    // exclude：组合拖拽时排除组内成员，避免组内部间距/基线干扰吸附
-    const shapes = [...this.shapes.values()].filter((o) => !exclude || !exclude.has(o))
-    // 间隙聚类取众数：簇内相邻差值 <= tol，出现次数 >= 2 时取簇均值，否则 NaN
-    const modeGap = (gaps: number[]): number => {
-      if (gaps.length < 2) return NaN
-      const s = [...gaps].sort((a, b) => a - b)
-      let best = NaN
-      let bestN = 1
-      let i = 0
-      while (i < s.length) {
-        let j = i
-        while (j + 1 < s.length && s[j + 1] - s[j] <= tol) j++
-        if (j - i + 1 > bestN) {
-          bestN = j - i + 1
-          best = (s[i] + s[j]) / 2
-        }
-        i = j + 1
-      }
-      return bestN >= 2 ? best : NaN
-    }
-    // 单侧吸附的目标间距：当前间隙接近众数时锁定众数，否则复现既有间距 g
-    const targetGap = (cur: number, g: number, mode: number): number =>
-      !Number.isNaN(mode) && Math.abs(cur - mode) <= tol ? mode : g
-    if (!skipX) {
-      // 水平投影带：与拖拽节点垂直方向重叠（含容差）的节点
-      const band = shapes.filter(
-        (o) => o !== shape && o.y < shape.y + shape.height + tol && o.y + o.height > shape.y - tol,
-      )
-      const midY = shape.y + shape.height / 2
-      let L: Shape | null = null
-      let R: Shape | null = null
-      for (const o of band) {
-        if (o.x + o.width <= shape.x && (!L || o.x + o.width > L.x + L.width)) L = o
-        if (o.x >= shape.x + shape.width && (!R || o.x < R.x)) R = o
-      }
-      // 高频间距样本：带内每个节点与其最近右邻的间隙
-      const gapsX: number[] = []
-      for (const o of band) {
-        let nr: Shape | null = null
-        for (const p of band) {
-          if (p === o || p.x < o.x + o.width) continue
-          if (!nr || p.x < nr.x) nr = p
-        }
-        if (nr) {
-          const g = nr.x - (o.x + o.width)
-          if (g > 0) gapsX.push(g)
-        }
-      }
-      const modeX = modeGap(gapsX)
-      const gL = L ? shape.x - (L.x + L.width) : Infinity
-      const gR = R ? R.x - (shape.x + shape.width) : Infinity
-      if (L && R && gL > 0 && gR > 0) {
-        if (Math.abs(gL - gR) <= tol) {
-          shape.x -= (gL - gR) / 2 // 平分差值，两侧间隙相等
-          snappedX = true
-        } else if (!Number.isNaN(modeX) && Math.abs(gL - modeX) <= tol && Math.abs(gR - modeX) <= tol) {
-          shape.x = L.x + L.width + modeX // 两侧都接近高频间距，磁吸过去
-          snappedX = true
-        }
-      } else if (L && !R && gL > 0) {
-        // 仅左侧有邻居：优先吸附到高频间距，否则复现 L 与其左邻 LL
-        // （投影带内最近）的既有间距
-        let LL: Shape | null = null
-        for (const o of band) {
-          if (o === L) continue
-          if (o.x + o.width <= L.x && (!LL || o.x + o.width > LL.x + LL.width)) LL = o
-        }
-        if (LL) {
-          const g = L.x - (LL.x + LL.width)
-          const target = targetGap(gL, g, modeX)
-          if (target > 0 && Math.abs(gL - target) <= tol) {
-            shape.x = L.x + L.width + target
-            snappedX = true
-          }
-        }
-      } else if (R && !L && gR > 0) {
-        // 仅右侧有邻居：优先吸附到高频间距，否则复现 R 与其右邻 RR
-        // （投影带内最近）的既有间距
-        let RR: Shape | null = null
-        for (const o of band) {
-          if (o === R) continue
-          if (o.x >= R.x + R.width && (!RR || o.x < RR.x)) RR = o
-        }
-        if (RR) {
-          const g = RR.x - (R.x + R.width)
-          const target = targetGap(gR, g, modeX)
-          if (target > 0 && Math.abs(gR - target) <= tol) {
-            shape.x = R.x - target - shape.width
-            snappedX = true
-          }
-        }
-      }
-      // 吸附平移后重算，两侧间隙相等时输出测量线段
-      if (L && R) {
-        const a = shape.x - (L.x + L.width)
-        const b = R.x - (shape.x + shape.width)
-        if (a > 0 && Math.abs(a - b) <= tol) {
-          out.push({ x1: L.x + L.width, y1: midY, x2: shape.x, y2: midY, value: a })
-          out.push({ x1: shape.x + shape.width, y1: midY, x2: R.x, y2: midY, value: b })
-        }
-      } else if (L) {
-        // 外侧等间距：把 L 左侧的既有间距一并画出
-        let LL: Shape | null = null
-        for (const o of band) {
-          if (o === L) continue
-          if (o.x + o.width <= L.x && (!LL || o.x + o.width > LL.x + LL.width)) LL = o
-        }
-        if (LL) {
-          const g = L.x - (LL.x + LL.width)
-          const a = shape.x - (L.x + L.width)
-          if (g > 0 && a > 0 && (Math.abs(a - g) <= tol || Math.abs(a - modeX) <= tol)) {
-            out.push({ x1: LL.x + LL.width, y1: L.y + L.height / 2, x2: L.x, y2: L.y + L.height / 2, value: g })
-            out.push({ x1: L.x + L.width, y1: midY, x2: shape.x, y2: midY, value: a })
-          }
-        }
-      } else if (R) {
-        // 外侧等间距（拖拽节点在左）：把 R 右侧的既有间距一并画出
-        let RR: Shape | null = null
-        for (const o of band) {
-          if (o === R) continue
-          if (o.x >= R.x + R.width && (!RR || o.x < RR.x)) RR = o
-        }
-        if (RR) {
-          const g = RR.x - (R.x + R.width)
-          const a = R.x - (shape.x + shape.width)
-          if (g > 0 && a > 0 && (Math.abs(a - g) <= tol || Math.abs(a - modeX) <= tol)) {
-            out.push({ x1: shape.x + shape.width, y1: midY, x2: R.x, y2: midY, value: a })
-            out.push({ x1: R.x + R.width, y1: R.y + R.height / 2, x2: RR.x, y2: R.y + R.height / 2, value: g })
-          }
-        }
-      }
-    }
-    if (!skipY) {
-      // 垂直投影带：与拖拽节点水平方向重叠（含容差）的节点，逻辑与水平对称
-      const band = shapes.filter(
-        (o) => o !== shape && o.x < shape.x + shape.width + tol && o.x + o.width > shape.x - tol,
-      )
-      const midX = shape.x + shape.width / 2
-      let T: Shape | null = null
-      let B: Shape | null = null
-      for (const o of band) {
-        if (o.y + o.height <= shape.y && (!T || o.y + o.height > T.y + T.height)) T = o
-        if (o.y >= shape.y + shape.height && (!B || o.y < B.y)) B = o
-      }
-      // 高频间距样本：带内每个节点与其最近下邻的间隙
-      const gapsY: number[] = []
-      for (const o of band) {
-        let nb: Shape | null = null
-        for (const p of band) {
-          if (p === o || p.y < o.y + o.height) continue
-          if (!nb || p.y < nb.y) nb = p
-        }
-        if (nb) {
-          const g = nb.y - (o.y + o.height)
-          if (g > 0) gapsY.push(g)
-        }
-      }
-      const modeY = modeGap(gapsY)
-      const gT = T ? shape.y - (T.y + T.height) : Infinity
-      const gB = B ? B.y - (shape.y + shape.height) : Infinity
-      if (T && B && gT > 0 && gB > 0) {
-        if (Math.abs(gT - gB) <= tol) {
-          shape.y -= (gT - gB) / 2
-          snappedY = true
-        } else if (!Number.isNaN(modeY) && Math.abs(gT - modeY) <= tol && Math.abs(gB - modeY) <= tol) {
-          shape.y = T.y + T.height + modeY
-          snappedY = true
-        }
-      } else if (T && !B && gT > 0) {
-        let TT: Shape | null = null
-        for (const o of band) {
-          if (o === T) continue
-          if (o.y + o.height <= T.y && (!TT || o.y + o.height > TT.y + TT.height)) TT = o
-        }
-        if (TT) {
-          const g = T.y - (TT.y + TT.height)
-          const target = targetGap(gT, g, modeY)
-          if (target > 0 && Math.abs(gT - target) <= tol) {
-            shape.y = T.y + T.height + target
-            snappedY = true
-          }
-        }
-      } else if (B && !T && gB > 0) {
-        let BB: Shape | null = null
-        for (const o of band) {
-          if (o === B) continue
-          if (o.y >= B.y + B.height && (!BB || o.y < BB.y)) BB = o
-        }
-        if (BB) {
-          const g = BB.y - (B.y + B.height)
-          const target = targetGap(gB, g, modeY)
-          if (target > 0 && Math.abs(gB - target) <= tol) {
-            shape.y = B.y - target - shape.height
-            snappedY = true
-          }
-        }
-      }
-      if (T && B) {
-        const a = shape.y - (T.y + T.height)
-        const b = B.y - (shape.y + shape.height)
-        if (a > 0 && Math.abs(a - b) <= tol) {
-          out.push({ x1: midX, y1: T.y + T.height, x2: midX, y2: shape.y, value: a })
-          out.push({ x1: midX, y1: shape.y + shape.height, x2: midX, y2: B.y, value: b })
-        }
-      } else if (T) {
-        let TT: Shape | null = null
-        for (const o of band) {
-          if (o === T) continue
-          if (o.y + o.height <= T.y && (!TT || o.y + o.height > TT.y + TT.height)) TT = o
-        }
-        if (TT) {
-          const g = T.y - (TT.y + TT.height)
-          const a = shape.y - (T.y + T.height)
-          if (g > 0 && a > 0 && (Math.abs(a - g) <= tol || Math.abs(a - modeY) <= tol)) {
-            out.push({ x1: T.x + T.width / 2, y1: TT.y + TT.height, x2: T.x + T.width / 2, y2: T.y, value: g })
-            out.push({ x1: midX, y1: T.y + T.height, x2: midX, y2: shape.y, value: a })
-          }
-        }
-      } else if (B) {
-        // 外侧等间距（拖拽节点在上）：把 B 下方的既有间距一并画出
-        let BB: Shape | null = null
-        for (const o of band) {
-          if (o === B) continue
-          if (o.y >= B.y + B.height && (!BB || o.y < BB.y)) BB = o
-        }
-        if (BB) {
-          const g = BB.y - (B.y + B.height)
-          const a = B.y - (shape.y + shape.height)
-          if (g > 0 && a > 0 && (Math.abs(a - g) <= tol || Math.abs(a - modeY) <= tol)) {
-            out.push({ x1: midX, y1: shape.y + shape.height, x2: midX, y2: B.y, value: a })
-            out.push({ x1: B.x + B.width / 2, y1: B.y + B.height, x2: B.x + B.width / 2, y2: BB.y, value: g })
-          }
-        }
-      }
-    }
-    return { guides: out, snappedX, snappedY }
+    const candidates = [...this.shapes.values()].filter(
+      (o) => o !== shape && !(exclude && exclude.has(o)),
+    )
+    const r = computeSnap(shape, candidates, {
+      snapTol: SNAP_TOLERANCE / scale,
+      spacingTol: SPACING_TOLERANCE / scale,
+    })
+    shape.x += r.dx
+    shape.y += r.dy
+    this.guides = r.guides
   }
 
   // 按手柄方位应用缩放：对侧边/对角锚定，尺寸钳制到 MIN_SIZE
