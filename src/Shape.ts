@@ -21,6 +21,11 @@ const defaultStyle: ShapeStyle = {
   fontFamily: 'sans-serif',
 }
 
+// 文本到形状边界的单侧留白（内容盒 = 形状宽度 - 左右留白）
+const TEXT_PAD = 16
+// 多行文本行高
+const TEXT_LINE_HEIGHT = 1.4
+
 // 形状构造选项：kind 由具体子类决定，不对外暴露
 export interface ShapeOptions extends NodeOptions {
   text?: string
@@ -28,20 +33,25 @@ export interface ShapeOptions extends NodeOptions {
 }
 
 // 流程图形状基类：容器 Node，内嵌居中 Text 子节点。
-// 子类只负责三件事：drawPath（边界路径）、contains（命中判定）、
-// boundaryT（中心到边界的方向系数），锚点/端口/选中态/文字居中由基类统一处理。
+// 子类只负责四件事：drawPath（边界路径）、contains（命中判定）、
+// boundaryT（中心到边界的方向系数）、textFit（文本盒内接换算系数），
+// 锚点/端口/选中态/文字居中/高度自适应由基类统一处理。
 export abstract class Shape extends Node {
   readonly kind: ShapeKind
   style: ShapeStyle
   text: Text
   // 选中态标志（由 FlowChart 维护；选中视觉——bounds 框/手柄/端口——由其覆盖层绘制）
   selected = false
+  // 尺寸下限：子类给定的形状默认尺寸（fit 内容定尺寸时兜底）
+  private defaultSize: { width: number; height: number }
 
   constructor(kind: ShapeKind, defaults: { width: number; height: number }, options: ShapeOptions = {}) {
     super(options)
     this.kind = kind
     this.style = { ...defaultStyle, ...options.style }
+    this.defaultSize = { ...defaults }
     // 形状尺寸固定：未显式给宽高时套用该形状的默认尺寸（Node 默认的 autoWidth 关闭）
+    const explicitSize = options.width !== undefined && options.height !== undefined
     if (options.width === undefined) {
       this.autoWidth = false
       this.width = defaults.width
@@ -50,26 +60,45 @@ export abstract class Shape extends Node {
       this.autoHeight = false
       this.height = defaults.height
     }
+    // 文本不自动定宽：换行宽度始终跟随形状宽度，打字只影响高度
     this.text = new Text({
       text: options.text ?? '',
       fill: this.style.color,
       fontSize: this.style.fontSize,
       fontFamily: this.style.fontFamily,
-      wrap: false,
+      wrap: true,
+      lineHeight: TEXT_LINE_HEIGHT,
     })
+    this.text.autoWidth = false
     this.add(this.text)
-    this.layout()
+    // 未显式给全尺寸时按内容自适应高度，否则保留外部尺寸仅居中
+    if (explicitSize) this.layout()
+    else this.fit()
   }
 
-  // 文本居中：文本改动重测后由外部（FlowChart）调用
+  // 文本居中：换行宽度同步为形状内接内容盒宽度并重测，再居中（不改形状高度）
   layout() {
+    this.text.width = Math.max(0, this.width / this.textFit - TEXT_PAD * 2)
+    this.text.measure()
     this.text.x = Math.round((this.width - this.text.width) / 2)
+    this.text.y = Math.round((this.height - this.text.height) / 2)
+  }
+
+  // 打字只影响高度：按当前宽度重排文本，高度按内接关系换算后取与默认高度的最大值，
+  // 宽度保持不变；文本改动（编辑输入/结束）后由 FlowChart 调用
+  fit() {
+    this.layout()
+    this.height = Math.max(Math.ceil(this.text.height * this.textFit) + TEXT_PAD * 2, this.defaultSize.height)
     this.text.y = Math.round((this.height - this.text.height) / 2)
   }
 
   //#region 锚点与端口
   // 中心到边界的方向系数：沿 (dx, dy) 从中心出发，t 为到达边界的比例（中心 + t·方向）
   protected abstract boundaryT(dx: number, dy: number): number
+
+  // 文本盒内接换算系数：形状内最大居中内接矩形的宽高占形状的比例的倒数
+  //（矩形 1、椭圆 √2、菱形 2）。决定文本换行宽度（宽/k）与高度换算（高×k）
+  protected abstract get textFit(): number
 
   // 朝目标点方向的边界锚点（世界坐标）：中心连线与自身边界求交
   anchor(target: { x: number; y: number }): { x: number; y: number } {

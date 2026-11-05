@@ -391,15 +391,15 @@ export class FlowChart {
     this.app = new App(options.canvas);
     this.app.use(new Viewport());
     const editor = new TextEditor({
-      // 输入实时同步：文本重测后重新居中，并让覆盖层跟随新位置
+      // 输入实时同步：文本按当前宽度重排并自适应高度（宽度不变），覆盖层跟随新位置
       onInput: () => {
         const shape = this.editing;
         if (!shape) return;
-        shape.layout();
+        shape.fit();
         this.app.render();
         this.editor.reposition();
       },
-      // 编辑结束（失焦）：文字居中落定并通知外部
+      // 编辑结束（失焦）：尺寸按最终文本落定并通知外部
       onEditEnd: () => this.finishEdit(),
     });
     this.app.use(editor);
@@ -715,7 +715,7 @@ export class FlowChart {
     const shape = this.editing;
     if (!shape) return;
     this.editing = null;
-    shape.layout();
+    shape.fit();
     this.app.render();
     this.onChange?.("text");
   }

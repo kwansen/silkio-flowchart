@@ -6,6 +6,11 @@ import type { ShapeKind } from './data'
 export class RectShape extends Shape {
   radius = 8
 
+  // 矩形本身即最大内接矩形
+  protected get textFit() {
+    return 1
+  }
+
   constructor(options: ShapeOptions = {}) {
     super('rect', { width: 160, height: 64 }, options)
   }
@@ -28,6 +33,11 @@ export class RectShape extends Shape {
 
 // 菱形（判断分支）
 export class Diamond extends Shape {
+  // 菱形内最大居中内接矩形为 1/2 倍宽高（四角落在边中点），取倒数
+  protected get textFit() {
+    return 2
+  }
+
   constructor(options: ShapeOptions = {}) {
     super('diamond', { width: 160, height: 96 }, options)
   }
@@ -56,6 +66,11 @@ export class Diamond extends Shape {
 
 // 椭圆（开始 / 结束）
 export class EllipseShape extends Shape {
+  // 椭圆内最大居中内接矩形为 1/√2 倍宽高，取倒数
+  protected get textFit() {
+    return Math.SQRT2
+  }
+
   constructor(options: ShapeOptions = {}) {
     super('ellipse', { width: 140, height: 64 }, options)
   }
