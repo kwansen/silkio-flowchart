@@ -279,6 +279,9 @@ class SelectionOverlay extends Node {
       } else {
         ctx.fillStyle = "#ffffff";
         ctx.fill();
+        // 显式恢复描边样式：悬浮端口的白色箭头会改写 strokeStyle，
+        // 不重置会让其后绘制的端口用白色描边（视觉上"样式被改变"）
+        ctx.strokeStyle = SELECT_COLOR;
         ctx.lineWidth = 1.5 * k;
         ctx.stroke();
       }
@@ -1036,8 +1039,10 @@ export class FlowChart {
         this.hoverPort = hp;
         this.app.render();
       }
-      // 悬浮连线跟踪：命中连线时浅蓝色高亮并提升到连线层最上，防止被其他连线遮住
-      const he = this.hitEdge(p, scale);
+      // 悬浮连线跟踪：只有鼠标不压在任何形状上才考虑 edge 悬浮（形状层在上、edge 层在下，
+      // 被形状遮住的 edge 不该响应；命中时浅蓝色高亮并提升到连线层最上，防止被其他连线遮住）
+      const shapeHit = this.hitShape(p);
+      const he = shapeHit ? null : this.hitEdge(p, scale);
       if (he !== this.hoverEdge) {
         if (this.hoverEdge) this.hoverEdge.hovered = false;
         this.hoverEdge = he;
