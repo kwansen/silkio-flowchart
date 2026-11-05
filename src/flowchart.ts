@@ -352,7 +352,8 @@ type Session =
       source: Shape;
       sourceDir: PortDir;
       preview: LinkPreview;
-      start: { x: number; y: number }; // 按下位置：抬起时位移小于阈值视为点击（快速建节点）
+      start: { x: number; y: number }; // 按下位置：抬起时未进入拖拽态视为点击（快速建节点）
+      armed?: boolean; // 位移超过点击阈值、确认是拖拽连线后为 true（此时才显示预览边）
     }
   | { kind: "edge-move"; edge: FlowEdge; which: "from" | "to" };
 
@@ -844,7 +845,7 @@ export class FlowChart {
     return null;
   }
 
-  // 悬停光标：手柄/边线给缩放光标，端口给十字（节点本体保持默认光标）
+  // 悬停光标：手柄/边线给缩放光标（端口与节点本体保持默认光标）
   private hoverCursor(
     shape: Shape,
     p: { x: number; y: number },
@@ -855,7 +856,6 @@ export class FlowChart {
       return corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize";
     const side = this.edgeHit(shape, p, scale);
     if (side) return side === "n" || side === "s" ? "ns-resize" : "ew-resize";
-    if (this.portHit(shape, p, scale)) return "crosshair";
     return null;
   }
 
@@ -881,14 +881,13 @@ export class FlowChart {
       }
       const dir = this.portHit(sel, p, scale);
       if (dir) {
+        // 按下时不创建预览边（此刻无法区分点击/拖拽）：位移超过点击阈值
+        // 进入拖拽连线时才插入预览并取消选中（见 onMove 的 armed 逻辑）
         const preview = new LinkPreview();
         preview.from = sel.portAt(dir);
         preview.fromDir = dir;
         preview.to = p;
         preview.toDir = this.previewToDir(dir, preview.from, p);
-        const idx = this.app.children.findIndex((n) => n instanceof Shape);
-        if (idx === -1) this.app.children.push(preview);
-        else this.app.children.splice(idx, 0, preview);
         this.session = {
           kind: "link",
           source: sel,
@@ -896,9 +895,6 @@ export class FlowChart {
           preview,
           start: p,
         };
-        this.options.canvas.style.cursor = "crosshair";
-        // 拖拽开始即取消形状激活，选中框与手柄不再显示
-        this.select(null);
         this.app.render();
         return;
       }
@@ -1108,6 +1104,21 @@ export class FlowChart {
           : null;
       this.app.render();
     } else if (s.kind === "link") {
+      const scale = this.app.renderer.viewport.scale;
+      // 位移超过点击阈值才确认是拖拽连线：此时才插入预览边并取消选中
+      if (!s.armed) {
+        if (
+          Math.hypot(p.x - s.start.x, p.y - s.start.y) <=
+          CLICK_MOVE_TOLERANCE / scale
+        )
+          return;
+        s.armed = true;
+        const idx = this.app.children.findIndex((n) => n instanceof Shape);
+        if (idx === -1) this.app.children.push(s.preview);
+        else this.app.children.splice(idx, 0, s.preview);
+        this.options.canvas.style.cursor = "crosshair";
+        this.select(null);
+      }
       this.updateLinkTarget(p);
       // 吸附时预览以手柄的具体位置与端口方向渲染；自由拖拽时按光标相对
       // 出口端口的位置确定虚拟进入方向
@@ -1356,11 +1367,8 @@ export class FlowChart {
       this.linkTarget = null;
       this.linkSnap = null;
       const p = this.toWorld(e);
-      const scale = this.app.renderer.viewport.scale;
-      const clicked =
-        Math.hypot(p.x - s.start.x, p.y - s.start.y) <=
-        CLICK_MOVE_TOLERANCE / scale;
-      if (clicked) {
+      // 未进入拖拽态（armed）即为纯点击端口：沿端口方向自动新建节点并连线
+      if (!s.armed) {
         this.createNodeInDirection(s.source, s.sourceDir);
       } else if (target && snap) {
         this.addEdgeBetween(s.source, target, true, {
