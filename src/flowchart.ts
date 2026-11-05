@@ -1232,8 +1232,20 @@ export class FlowChart {
     if (s.handle.includes('n')) sy = (o.height - dy) / o.height
     const minW = Math.min(...s.origins.map(g => g.width))
     const minH = Math.min(...s.origins.map(g => g.height))
-    sx = Math.max(sx, MIN_SIZE / minW)
-    sy = Math.max(sy, MIN_SIZE / minH)
+    if (s.handle.length === 2) {
+      // 角手柄：锁定比例等比缩放，取相对变化更大的轴作为统一缩放比
+      // （边手柄仅单轴生效，仍可自由改变比例）
+      const r = Math.max(
+        Math.abs(sx) >= Math.abs(sy) ? sx : sy,
+        MIN_SIZE / minW,
+        MIN_SIZE / minH,
+      )
+      sx = r
+      sy = r
+    } else {
+      sx = Math.max(sx, MIN_SIZE / minW)
+      sy = Math.max(sy, MIN_SIZE / minH)
+    }
     // 锚点：拖拽方向的对侧边/角固定不动
     const ax = s.handle.includes('w') ? o.x + o.width : o.x
     const ay = s.handle.includes('n') ? o.y + o.height : o.y
