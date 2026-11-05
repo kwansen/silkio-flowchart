@@ -31,6 +31,8 @@ export class FlowEdge extends Edge {
   toDir: PortDir
   // 选中态标志（由 FlowChart 维护；选中视觉——线色高亮——由渲染处理）
   selected = false
+  // 悬浮态标志：浅蓝色高亮（优先级低于选中）
+  hovered = false
   // 最近一次路由的折线点（渲染时更新，供命中检测使用）
   points: EdgePoint[] = []
 
@@ -78,8 +80,12 @@ export class FlowEdge extends Edge {
   render(ctx: CanvasRenderingContext2D) {
     this.update()
     const pts = this.route()
-    // 拖拽端点期间不显示激活高亮，保持常态线色
-    const color = this.selected && !this.dragWhich ? SELECT_COLOR : this.color
+    // 拖拽端点期间不显示高亮，保持常态线色；选中 > 悬浮 > 默认
+    const color = this.selected && !this.dragWhich
+      ? SELECT_COLOR
+      : this.hovered && !this.selected
+        ? HOVER_COLOR
+        : this.color
     // 线体末端回缩一个箭头长度再绘制，避免线头从三角箭头下方露出
     renderOrthoPolyline(ctx, trimEdgeEnd(pts), color, this.lineWidth, this.cornerRadius)
     drawEdgeArrow(ctx, pts, color)
@@ -234,6 +240,9 @@ export function renderEdgePreview(ctx: CanvasRenderingContext2D, pts: EdgePoint[
 
 // 选中态线色（与选中框同色系）
 const SELECT_COLOR = '#3b82f6'
+
+// 悬浮态线色（更浅的蓝，比选中淡、比默认亮）
+const HOVER_COLOR = '#93c5fd'
 
 // 箭头长度（三角沿行进方向的底边到尖端距离），线体末端按此回缩
 const ARROW_LEN = 10

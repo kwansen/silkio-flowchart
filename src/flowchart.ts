@@ -41,7 +41,7 @@ const CLICK_CREATE_GAP = 80; // 新节点与源节点边缘的间距（世界坐
 
 // 节点拖拽对齐：左/中/右与上/中/下接近其他节点的对应边时吸附，并绘制对齐参考线
 const SNAP_TOLERANCE = 6; // 对齐吸附阈值（屏幕像素），过大会产生粘滞感
-const ALIGN_COLOR = "#f43f5e"; // 对齐参考线颜色
+const ALIGN_COLOR = "#eea5ffff"; // 对齐参考线颜色
 const SPACING_TOLERANCE = 4; // 等间距吸附阈值（屏幕像素）
 
 // 缩放手柄方位：四角 + 四边
@@ -376,6 +376,8 @@ export class FlowChart {
   private linkSnap: PortDir | null = null;
   // 悬浮中的端口方向（单选形状的四向端口）：覆盖层放大该圆点并绘制方向箭头
   private hoverPort: PortDir | null = null;
+  // 悬浮中的连线：浅蓝色高亮（类似 hoverPort，状态变化时重绘）
+  private hoverEdge: FlowEdge | null = null;
   // 节点拖拽对齐参考线（applySnap/applySpacingSnap 更新，拖拽结束清除）
   private guides: SnapGuides | null = null;
   private onChange?: (type: FlowChangeType) => void;
@@ -865,6 +867,10 @@ export class FlowChart {
     const scale = this.app.renderer.viewport.scale;
     // 按下后进入交互会话，悬浮端口提示不再显示
     this.hoverPort = null;
+    if (this.hoverEdge) {
+      this.hoverEdge.hovered = false;
+      this.hoverEdge = null;
+    }
     // 选中态下按优先级命中：角手柄缩放 → 端口连线 → 边线缩放 → 形状体移动
     const sel = this.selShape;
     if (sel) {
@@ -1020,12 +1026,25 @@ export class FlowChart {
     const s = this.session;
     // 无会话时做悬停反馈：缩放手柄/边线/端口/形状体/连线分别给对应光标
     if (!s) {
+      // 右键拖拽视口时跳过：viewport 已设置 grabbing，不要覆盖
+      if (e.buttons & 2) return;
       const p = this.toWorld(e);
       const scale = this.app.renderer.viewport.scale;
       // 悬浮端口跟踪：单选形状的端口上悬浮时覆盖层放大该圆点并绘制方向箭头
       const hp = this.selShape ? this.portHit(this.selShape, p, scale) : null;
       if (hp !== this.hoverPort) {
         this.hoverPort = hp;
+        this.app.render();
+      }
+      // 悬浮连线跟踪：命中连线时浅蓝色高亮并提升到连线层最上，防止被其他连线遮住
+      const he = this.hitEdge(p, scale);
+      if (he !== this.hoverEdge) {
+        if (this.hoverEdge) this.hoverEdge.hovered = false;
+        this.hoverEdge = he;
+        if (he) {
+          he.hovered = true;
+          this.raiseEdgeTop(he);
+        }
         this.app.render();
       }
       let cursor: string | null = null;
@@ -1052,8 +1071,7 @@ export class FlowChart {
         this.edgeHandleHit(this.selection, p, scale)
       )
         cursor = "move";
-      // 悬停节点/选框采用默认光标（移动交互已由选框内拖拽覆盖）
-      if (cursor === null) cursor = this.hitEdge(p, scale) ? "pointer" : null;
+      // 连线、节点、空白区域统一 default 光标，悬浮反馈由视觉（浅蓝色）而非光标表达
       this.options.canvas.style.cursor = cursor ?? "";
       return;
     }
