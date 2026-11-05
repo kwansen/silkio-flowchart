@@ -35,23 +35,20 @@ export interface ShapeOptions extends NodeOptions {
 // 流程图形状基类：容器 Node，内嵌居中 Text 子节点。
 // 子类只负责四件事：drawPath（边界路径）、contains（命中判定）、
 // boundaryT（中心到边界的方向系数）、textFit（文本盒内接换算系数），
-// 锚点/端口/选中态/文字居中/高度自适应由基类统一处理。
+// 锚点/端口/选中态/文字居中由基类统一处理。
+// 形状尺寸完全由外部决定（默认值/拖拽/序列化），文本改动只重排居中，不改尺寸。
 export abstract class Shape extends Node {
   readonly kind: ShapeKind
   style: ShapeStyle
   text: Text
   // 选中态标志（由 FlowChart 维护；选中视觉——bounds 框/手柄/端口——由其覆盖层绘制）
   selected = false
-  // 尺寸下限：子类给定的形状默认尺寸（fit 内容定尺寸时兜底）
-  private defaultSize: { width: number; height: number }
 
   constructor(kind: ShapeKind, defaults: { width: number; height: number }, options: ShapeOptions = {}) {
     super(options)
     this.kind = kind
     this.style = { ...defaultStyle, ...options.style }
-    this.defaultSize = { ...defaults }
     // 形状尺寸固定：未显式给宽高时套用该形状的默认尺寸（Node 默认的 autoWidth 关闭）
-    const explicitSize = options.width !== undefined && options.height !== undefined
     if (options.width === undefined) {
       this.autoWidth = false
       this.width = defaults.width
@@ -60,35 +57,26 @@ export abstract class Shape extends Node {
       this.autoHeight = false
       this.height = defaults.height
     }
-    // 文本不自动定宽：换行宽度始终跟随形状宽度，打字只影响高度
+    // 文本不自动定宽：换行宽度始终跟随形状宽度，打字不改节点尺寸；多行水平居中
     this.text = new Text({
       text: options.text ?? '',
       fill: this.style.color,
       fontSize: this.style.fontSize,
       fontFamily: this.style.fontFamily,
       wrap: true,
+      align: 'center',
       lineHeight: TEXT_LINE_HEIGHT,
     })
     this.text.autoWidth = false
     this.add(this.text)
-    // 未显式给全尺寸时按内容自适应高度，否则保留外部尺寸仅居中
-    if (explicitSize) this.layout()
-    else this.fit()
+    this.layout()
   }
 
-  // 文本居中：换行宽度同步为形状内接内容盒宽度并重测，再居中（不改形状高度）
+  // 文本居中：换行宽度同步为形状内接内容盒宽度并重测，再居中（不改形状尺寸）
   layout() {
     this.text.width = Math.max(0, this.width / this.textFit - TEXT_PAD * 2)
     this.text.measure()
     this.text.x = Math.round((this.width - this.text.width) / 2)
-    this.text.y = Math.round((this.height - this.text.height) / 2)
-  }
-
-  // 打字只影响高度：按当前宽度重排文本，高度按内接关系换算后取与默认高度的最大值，
-  // 宽度保持不变；文本改动（编辑输入/结束）后由 FlowChart 调用
-  fit() {
-    this.layout()
-    this.height = Math.max(Math.ceil(this.text.height * this.textFit) + TEXT_PAD * 2, this.defaultSize.height)
     this.text.y = Math.round((this.height - this.text.height) / 2)
   }
 
