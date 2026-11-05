@@ -1203,16 +1203,27 @@ export class FlowChart {
   private applyResize(s: Extract<Session, { kind: 'resize' }>, dx: number, dy: number) {
     const o = s.origin
     let { x, y, width: w, height: h } = o
-    if (s.handle.includes('e')) w = Math.max(MIN_SIZE, o.width + dx)
-    if (s.handle.includes('s')) h = Math.max(MIN_SIZE, o.height + dy)
-    if (s.handle.includes('w')) {
-      w = Math.max(MIN_SIZE, o.width - dx)
-      x = o.x + o.width - w
+    if (s.handle.includes('e')) w = o.width + dx
+    if (s.handle.includes('s')) h = o.height + dy
+    if (s.handle.includes('w')) w = o.width - dx
+    if (s.handle.includes('n')) h = o.height - dy
+    if (s.handle.length === 2) {
+      // 角手柄：锁定比例等比缩放，取相对变化更大的轴作为统一缩放比
+      // （边手柄仅单轴生效，仍可自由改变比例）
+      const r = Math.max(
+        Math.abs(w / o.width) >= Math.abs(h / o.height) ? w / o.width : h / o.height,
+        MIN_SIZE / o.width,
+        MIN_SIZE / o.height,
+      )
+      w = o.width * r
+      h = o.height * r
+    } else {
+      w = Math.max(MIN_SIZE, w)
+      h = Math.max(MIN_SIZE, h)
     }
-    if (s.handle.includes('n')) {
-      h = Math.max(MIN_SIZE, o.height - dy)
-      y = o.y + o.height - h
-    }
+    // 锚点：拖拽方向的对侧边/角固定不动
+    if (s.handle.includes('w')) x = o.x + o.width - w
+    if (s.handle.includes('n')) y = o.y + o.height - h
     s.shape.x = x
     s.shape.y = y
     s.shape.width = w
