@@ -28,10 +28,16 @@ const MIN_SIZE = 20; // 缩放最小尺寸（世界坐标）
 
 // 连线端口圆点外观：沿边中点外法向浮在形状外侧，不遮挡边线与箭头
 const PORT_RADIUS = 5; // 端口圆点半径（屏幕像素）
-const PORT_OFFSET = 12; // 端口圆点圆心相对边中点向外的偏移（屏幕像素）
+const PORT_OFFSET = 24; // 端口圆点圆心相对边中点向外的偏移（屏幕像素）
+const PORT_HOVER_SCALE = 2.4; // 端口悬浮放大倍数，命中范围与放大后的视觉半径一致
 
 // 连线拖拽吸附：光标进入目标节点包围盒外扩该范围时，目标节点浮出对接手柄
 const LINK_SNAP_MARGIN = 16; // 吸附感应范围（屏幕像素）
+
+// 端口点击快速创建：点击（非拖拽）端口时沿该方向自动新建节点并连线；
+// 拖拽仍是手动连线，以按下后的位移区分两种意图
+const CLICK_MOVE_TOLERANCE = 4; // 判定点击的最大位移（屏幕像素）
+const CLICK_CREATE_GAP = 80; // 新节点与源节点边缘的间距（世界坐标）
 
 // 节点拖拽对齐：左/中/右与上/中/下接近其他节点的对应边时吸附，并绘制对齐参考线
 const SNAP_TOLERANCE = 6; // 对齐吸附阈值（屏幕像素），过大会产生粘滞感
@@ -72,6 +78,8 @@ class SelectionOverlay extends Node {
       shape: Shape | null;
       scale: number;
       ports: Array<{ x: number; y: number }>;
+      // 悬浮中的端口方向：该端口圆点放大并显示方向箭头（点击快速建节点提示）
+      hoverPort: PortDir | null;
       // 激活连线的首尾端点手柄（世界坐标）
       edgeHandles: Array<{ x: number; y: number }>;
       // 连线拖拽中的目标节点：ports 为其四个对接手柄，active 为吸附中的手柄
@@ -96,6 +104,7 @@ class SelectionOverlay extends Node {
       shape,
       scale,
       ports,
+      hoverPort,
       edgeHandles,
       link,
       guides,
@@ -152,8 +161,16 @@ class SelectionOverlay extends Node {
         ctx.fill();
         ctx.stroke();
       }
-      // 四向连线端口圆点（浮在形状外侧）
-      this.drawPorts(ctx, ports, k, null);
+      // 四向连线端口圆点（浮在形状外侧），悬浮端口放大并显示方向箭头
+      const dirs = ["top", "right", "bottom", "left"] as const;
+      this.drawPorts(
+        ctx,
+        ports,
+        k,
+        null,
+        hoverPort ? dirs.indexOf(hoverPort) : -1,
+        hoverPort,
+      );
     }
     // 激活连线的首尾端点手柄（白底蓝边圆形）
     if (edgeHandles.length) {
@@ -238,19 +255,25 @@ class SelectionOverlay extends Node {
     ctx.restore();
   }
 
-  // 绘制端口圆点：active 非空时该位置的圆点改为实心蓝（吸附高亮）
+  // 绘制端口圆点：active 非空时该位置的圆点改为实心蓝（吸附高亮）；
+  // hoverIdx/hoverDir 指向悬浮端口：放大、实心蓝并在内部绘制指向外侧的方向箭头
+  // （提示点击可沿该方向快速新建节点）
   private drawPorts(
     ctx: CanvasRenderingContext2D,
     pts: Array<{ x: number; y: number }>,
     k: number,
     active: { x: number; y: number } | null,
+    hoverIdx = -1,
+    hoverDir?: PortDir | null,
   ) {
     ctx.strokeStyle = SELECT_COLOR;
-    for (const p of pts) {
+    pts.forEach((p, i) => {
       const isActive = active && active.x === p.x && active.y === p.y;
+      const isHover = i === hoverIdx && hoverDir;
+      const r = (isHover ? PORT_RADIUS * PORT_HOVER_SCALE : PORT_RADIUS) * k;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, PORT_RADIUS * k, 0, Math.PI * 2);
-      if (isActive) {
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      if (isActive || isHover) {
         ctx.fillStyle = SELECT_COLOR;
         ctx.fill();
       } else {
@@ -259,7 +282,24 @@ class SelectionOverlay extends Node {
         ctx.lineWidth = 1.5 * k;
         ctx.stroke();
       }
-    }
+      // 悬浮箭头：白色雪佛龙指向端口外法向
+      if (isHover && hoverDir) {
+        const v = PORT_DIR_VEC[hoverDir];
+        const n = { x: -v.y, y: v.x };
+        const tip = { x: p.x + v.x * r * 0.45, y: p.y + v.y * r * 0.45 };
+        const base = { x: p.x - v.x * r * 0.2, y: p.y - v.y * r * 0.2 };
+        const w = r * 0.42;
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.5 * k;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(base.x + n.x * w, base.y + n.y * w);
+        ctx.lineTo(tip.x, tip.y);
+        ctx.lineTo(base.x - n.x * w, base.y - n.y * w);
+        ctx.stroke();
+        ctx.lineCap = "butt";
+      }
+    });
   }
 
   hitTest() {
@@ -307,7 +347,13 @@ type Session =
         height: number;
       }>;
     }
-  | { kind: "link"; source: Shape; sourceDir: PortDir; preview: LinkPreview }
+  | {
+      kind: "link";
+      source: Shape;
+      sourceDir: PortDir;
+      preview: LinkPreview;
+      start: { x: number; y: number }; // 按下位置：抬起时位移小于阈值视为点击（快速建节点）
+    }
   | { kind: "edge-move"; edge: FlowEdge; which: "from" | "to" };
 
 // 流程图场景门面：组装视口 / 文本编辑插件，持有形状与连线模型，
@@ -327,6 +373,8 @@ export class FlowChart {
   // 连线拖拽吸附状态：接近中的目标节点与吸附中的端口方向
   private linkTarget: Shape | null = null;
   private linkSnap: PortDir | null = null;
+  // 悬浮中的端口方向（单选形状的四向端口）：覆盖层放大该圆点并绘制方向箭头
+  private hoverPort: PortDir | null = null;
   // 节点拖拽对齐参考线（applySnap/applySpacingSnap 更新，拖拽结束清除）
   private guides: SnapGuides | null = null;
   private onChange?: (type: FlowChangeType) => void;
@@ -364,6 +412,7 @@ export class FlowChart {
         ports: selShape
           ? dirs.map((dir) => this.portPos(selShape, dir, scale))
           : [],
+        hoverPort: this.hoverPort,
         // 激活连线的首尾端点手柄（端点拖拽期间隐藏）
         edgeHandles:
           selEdge && !selEdge.dragWhich && selEdge.points.length >= 2
@@ -550,6 +599,8 @@ export class FlowChart {
     // 多选与单选互斥：任何单选变化都清空组合选中
     const hadMulti = this.multi.length > 0;
     this.multi = [];
+    // 选中变化后悬浮端口不再有效（可能指向新选中形状的错误方向）
+    this.hoverPort = null;
     if (this.selection === sel && !hadMulti) return;
     if (this.selection) this.selection.selected = false;
     this.selection = sel;
@@ -719,9 +770,12 @@ export class FlowChart {
 
   // 端口命中：返回命中的方向，未命中返回 null（按外浮后的圆点位置判定）
   private portHit(shape: Shape, p: { x: number; y: number }, scale: number) {
+    // 命中范围 = 悬浮放大后的视觉圆（PORT_RADIUS * PORT_HOVER_SCALE），
+    // 进入即触发悬浮/点击，之外不响应
+    const r = (PORT_RADIUS * PORT_HOVER_SCALE) / scale;
     for (const dir of ["top", "right", "bottom", "left"] as const) {
       const port = this.portPos(shape, dir, scale);
-      if (Math.hypot(p.x - port.x, p.y - port.y) <= PORT_HIT_RADIUS) return dir;
+      if (Math.hypot(p.x - port.x, p.y - port.y) <= r) return dir;
     }
     return null;
   }
@@ -809,6 +863,8 @@ export class FlowChart {
     if (e.button !== 0) return;
     const p = this.toWorld(e);
     const scale = this.app.renderer.viewport.scale;
+    // 按下后进入交互会话，悬浮端口提示不再显示
+    this.hoverPort = null;
     // 选中态下按优先级命中：角手柄缩放 → 端口连线 → 边线缩放 → 形状体移动
     const sel = this.selShape;
     if (sel) {
@@ -833,7 +889,13 @@ export class FlowChart {
         const idx = this.app.children.findIndex((n) => n instanceof Shape);
         if (idx === -1) this.app.children.push(preview);
         else this.app.children.splice(idx, 0, preview);
-        this.session = { kind: "link", source: sel, sourceDir: dir, preview };
+        this.session = {
+          kind: "link",
+          source: sel,
+          sourceDir: dir,
+          preview,
+          start: p,
+        };
         this.options.canvas.style.cursor = "crosshair";
         // 拖拽开始即取消形状激活，选中框与手柄不再显示
         this.select(null);
@@ -964,6 +1026,12 @@ export class FlowChart {
     if (!s) {
       const p = this.toWorld(e);
       const scale = this.app.renderer.viewport.scale;
+      // 悬浮端口跟踪：单选形状的端口上悬浮时覆盖层放大该圆点并绘制方向箭头
+      const hp = this.selShape ? this.portHit(this.selShape, p, scale) : null;
+      if (hp !== this.hoverPort) {
+        this.hoverPort = hp;
+        this.app.render();
+      }
       let cursor: string | null = null;
       // 多选组合框的手柄/边线优先给缩放光标
       const mb = this.multiBounds;
@@ -1279,24 +1347,58 @@ export class FlowChart {
       }
       this.app.render();
     } else {
-      // 连线拖拽结束：移除预览；吸附中的目标按其端口固定创建连线，否则按落点命中建边
-      // （源形状在拖拽开始时已取消激活）
+      // 连线交互结束：移除预览。（源形状在按下时已取消激活）
+      // 纯点击端口（位移在阈值内）：沿端口方向自动新建节点并连线；
+      // 拖拽时吸附中的目标按其端口固定创建连线，否则按落点命中建边
       this.removeTop(s.preview);
       const target = this.linkTarget;
       const snap = this.linkSnap;
       this.linkTarget = null;
       this.linkSnap = null;
-      if (target && snap) {
+      const p = this.toWorld(e);
+      const scale = this.app.renderer.viewport.scale;
+      const clicked =
+        Math.hypot(p.x - s.start.x, p.y - s.start.y) <=
+        CLICK_MOVE_TOLERANCE / scale;
+      if (clicked) {
+        this.createNodeInDirection(s.source, s.sourceDir);
+      } else if (target && snap) {
         this.addEdgeBetween(s.source, target, true, {
           from: s.sourceDir,
           to: snap,
         });
       } else {
-        const hit = this.hitShape(this.toWorld(e));
+        const hit = this.hitShape(p);
         if (hit && hit !== s.source) this.addEdgeBetween(s.source, hit, true);
       }
       this.app.render();
     }
+  }
+
+  // 端口点击快速创建：沿端口方向新建默认矩形节点并连线（边缘间距
+  // CLICK_CREATE_GAP，垂直于方向的轴线与源节点中心对齐），新节点进入选中态
+  private createNodeInDirection(source: Shape, dir: PortDir) {
+    const shape = createShape("rect", {});
+    if (dir === "right") {
+      shape.x = source.x + source.width + CLICK_CREATE_GAP;
+      shape.y = source.y + (source.height - shape.height) / 2;
+    } else if (dir === "left") {
+      shape.x = source.x - CLICK_CREATE_GAP - shape.width;
+      shape.y = source.y + (source.height - shape.height) / 2;
+    } else if (dir === "bottom") {
+      shape.x = source.x + (source.width - shape.width) / 2;
+      shape.y = source.y + source.height + CLICK_CREATE_GAP;
+    } else {
+      shape.x = source.x + (source.width - shape.width) / 2;
+      shape.y = source.y - CLICK_CREATE_GAP - shape.height;
+    }
+    this.registerShape(shape);
+    this.addEdgeBetween(source, shape, false, {
+      from: dir,
+      to: OPPOSITE_DIR[dir],
+    });
+    this.select(shape);
+    this.onChange?.("add");
   }
 
   private onDblClick(e: MouseEvent) {
