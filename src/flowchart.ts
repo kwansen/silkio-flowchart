@@ -1049,12 +1049,30 @@ export class FlowChart {
   }
 
   private onKeyDown(e: KeyboardEvent) {
-    if (e.key !== 'Delete' && e.key !== 'Backspace') return
     // 覆盖层持有焦点时按键属于输入，交由编辑器处理
     if (this.editing || this.editor.hasFocus()) return
-    if (!this.selection && !this.multi.length) return
+    // Delete/Backspace：删除选中
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (!this.selection && !this.multi.length) return
+      e.preventDefault()
+      this.deleteSelected()
+      return
+    }
+    // 方向键：微移选中节点（Shift 加速），连线不参与移动
+    const dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key]
+    if (!dir) return
+    const step = e.shiftKey ? 10 : 1
+    const dx = dir[0] * step
+    const dy = dir[1] * step
+    const targets = this.multi.length ? this.multi : this.selShape ? [this.selShape] : []
+    if (!targets.length) return
     e.preventDefault()
-    this.deleteSelected()
+    for (const s of targets) {
+      s.x += dx
+      s.y += dy
+    }
+    this.app.render()
+    this.onChange?.('move')
   }
   //#endregion
 }
