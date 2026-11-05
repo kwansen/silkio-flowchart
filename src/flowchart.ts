@@ -1267,7 +1267,8 @@ export class FlowChart {
         this.onChange?.('resize')
       }
     } else if (s.kind === 'blank') {
-      // 框选落定：与矩形相交的形状进入多选；仅一个时退化为普通单选
+      // 框选落定：与矩形相交的形状进入多选；仅一个时退化为普通单选；
+      // 落空（或未拖出矩形）时清除选中——render 覆盖残留的框选画面
       if (s.rect) {
         const hits = this.marqueeHits(s.rect)
         if (hits.length === 1) {
@@ -1275,7 +1276,12 @@ export class FlowChart {
         } else if (hits.length > 1) {
           this.multi = hits
           this.app.render()
+        } else {
+          this.select(null) // 落空清除选中；select 有无变化守卫可能跳过重绘
+          this.app.render() // 故显式渲染，覆盖残留的框选画面
         }
+      } else {
+        this.app.render()
       }
     } else if (s.kind === 'edge-move') {
       // 端点重接结束：退出拖拽态；吸附目标按其端口重接（任意节点，含本连线
