@@ -328,6 +328,8 @@ type Session =
       moved: boolean;
       group: Array<{ shape: Shape; x: number; y: number }> | null;
       keepMulti?: boolean;
+      // 按下在已选中节点上的屏幕坐标：抬起未拖动时视为点击进入编辑
+      press?: { x: number; y: number };
     }
   | {
       kind: "resize";
@@ -361,7 +363,8 @@ type Session =
   | { kind: "edge-move"; edge: FlowEdge; which: "from" | "to" };
 
 // 流程图场景门面：组装视口 / 文本编辑插件，持有形状与连线模型，
-// 内置交互：点选、拖拽移动、双击编辑文字、端口拖拽连线、Delete 删除
+// 内置交互：点选、拖拽移动、单击已选中节点进入编辑（按点击位置聚焦光标）、
+// 端口拖拽连线、Delete 删除
 export class FlowChart {
   app: App;
   private editor: TextEditorCapability;
@@ -705,12 +708,13 @@ export class FlowChart {
   //#endregion
 
   //#region 编辑
-  private startEdit(shape: Shape) {
+  // 进入编辑：point 为按下时屏幕坐标，编辑器经浏览器命中测试把光标折叠到点击处
+  private startEdit(shape: Shape, point?: { x: number; y: number }) {
     // 先 start：其内部 stop() 会触发旧会话的 onEditEnd → finishEdit，
     // 此时 this.editing 仍是旧形状（或 null），不会被新会话误清
     this.editor.start(shape.text);
     this.editing = shape;
-    this.editor.show({ fill: true });
+    this.editor.show({ fill: true, point });
   }
 
   private finishEdit() {
@@ -732,7 +736,6 @@ export class FlowChart {
     listen(canvas, "mousedown", (e) => this.onDown(e as MouseEvent));
     listen(window, "mousemove", (e) => this.onMove(e as MouseEvent));
     listen(window, "mouseup", (e) => this.onUp(e as MouseEvent));
-    listen(canvas, "dblclick", (e) => this.onDblClick(e as MouseEvent));
     listen(document, "keydown", (e) => this.onKeyDown(e as KeyboardEvent));
   }
 
@@ -977,6 +980,8 @@ export class FlowChart {
             .map((s) => ({ shape: s, x: s.x, y: s.y })),
         };
       } else {
+        // 按下在已选中节点上：记录屏幕坐标，抬起未拖动时进入编辑（拖拽仍优先）
+        const press = hit === this.selShape ? { x: e.clientX, y: e.clientY } : undefined;
         this.select(hit);
         this.session = {
           kind: "move",
@@ -985,6 +990,7 @@ export class FlowChart {
           origin: { x: hit.x, y: hit.y },
           moved: false,
           group: null,
+          press,
         };
       }
       return;
@@ -1334,6 +1340,9 @@ export class FlowChart {
       this.guides = null;
       this.app.render(); // 清除参考线后立即重绘，否则画面残留拖拽时最后一帧
       if (s.moved) this.onChange?.("move");
+      else if (s.press && Math.hypot(e.clientX - s.press.x, e.clientY - s.press.y) <= CLICK_MOVE_TOLERANCE)
+        // 未拖动的点击落在已选中节点上：进入编辑（光标聚焦到点击处）
+        this.startEdit(s.shape, s.press);
       else if (s.group && !s.keepMulti) this.select(s.shape); // 组内单击未拖动：塌缩为单选该形状
     } else if (s.kind === "resize") {
       const o = s.origin;
@@ -1441,11 +1450,6 @@ export class FlowChart {
     });
     this.select(shape);
     this.onChange?.("add");
-  }
-
-  private onDblClick(e: MouseEvent) {
-    const hit = this.hitShape(this.toWorld(e));
-    if (hit) this.startEdit(hit);
   }
 
   private onKeyDown(e: KeyboardEvent) {
