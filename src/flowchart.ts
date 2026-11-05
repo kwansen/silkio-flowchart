@@ -791,16 +791,24 @@ export class FlowChart {
       s.shape.x = s.origin.x + (p.x - s.start.x)
       s.shape.y = s.origin.y + (p.y - s.start.y)
       s.moved = true
-      // 组合移动：组内成员不作为吸附参考目标，避免触发内部基线
-      this.applySnap(s.shape, s.group ? new Set(s.group.map((g) => g.shape)) : null)
-      // 组合移动：其余成员跟随主形状的吸附后位移
       if (s.group) {
-        const dx = s.shape.x - s.origin.x
-        const dy = s.shape.y - s.origin.y
+        // 组合移动：以整体框（成员并集 bounds）的四边/中线与外部节点对齐吸附，
+        // 全部组内成员（含被按住的主节点）不作为参考目标，避免内部基线；
+        // 全量拖拽位移 + 吸附修正统一应用到全部成员
+        const exclude = new Set([s.shape, ...s.group.map((g) => g.shape)])
+        const b0 = this.unionBounds([s.shape, ...exclude])
+        const box: Bounds = { ...b0 }
+        this.applySnap(box, exclude)
+        const mx = (p.x - s.start.x) + (box.x - b0.x)
+        const my = (p.y - s.start.y) + (box.y - b0.y)
+        s.shape.x = s.origin.x + mx
+        s.shape.y = s.origin.y + my
         for (const g of s.group) {
-          g.shape.x = g.x + dx
-          g.shape.y = g.y + dy
+          g.shape.x = g.x + mx
+          g.shape.y = g.y + my
         }
+      } else {
+        this.applySnap(s.shape)
       }
       this.app.render()
     } else if (s.kind === 'resize') {
@@ -881,12 +889,13 @@ export class FlowChart {
     }
   }
 
-  // 节点拖拽吸附：等间距吸附优先——某轴发生等间距吸附后该轴不再做对齐吸附，
+  // 节点拖拽吸附：对 bounds 载体（单形状，或多选组合的并集框）做吸附——
+  // 等间距吸附优先——某轴发生等间距吸附后该轴不再做对齐吸附，
   // 避免两类吸附点相邻时（如间距 40px 恰与中线对齐差 1px）来回切换产生抖动；
   // 对齐吸附仅同类型基准配对——左对左、中对中、右对右（上/中/下同理），取各类
   // 最小差值做吸附平移；第二遍收集吸附后所有阈值内已对齐的基准（等宽节点上下
-  // 对齐时中线随之对齐，跳过中线参考线）
-  private applySnap(shape: Shape, exclude: Set<Shape> | null = null) {
+  // 对齐时中线随之对齐，跳过中线参考线）；吸附平移直接写入载体坐标
+  private applySnap(shape: Bounds, exclude: Set<Shape> | null = null) {
     const scale = this.app.renderer.viewport.scale
     const tol = SNAP_TOLERANCE / scale
     const spacing = this.applySpacingSnap(shape, false, false, exclude)
@@ -945,7 +954,7 @@ export class FlowChart {
   // 3. 两侧邻居间隙相等时平分差值；仅一侧有邻居时复现既有间距。
   // 返回绘制用的测量线段，以及两轴是否发生了吸附
   // （skipX/skipY 用于跳过对应轴；调用方以间距吸附结果决定对齐吸附是否生效）
-  private applySpacingSnap(shape: Shape, skipX: boolean, skipY: boolean, exclude: Set<Shape> | null = null): {
+  private applySpacingSnap(shape: Bounds, skipX: boolean, skipY: boolean, exclude: Set<Shape> | null = null): {
     guides: SpacingGuide[]; snappedX: boolean; snappedY: boolean
   } {
     const tol = SPACING_TOLERANCE / this.app.renderer.viewport.scale
