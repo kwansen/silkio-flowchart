@@ -1033,25 +1033,7 @@ export class FlowChart {
       if (e.buttons & 2) return;
       const p = this.toWorld(e);
       const scale = this.app.renderer.viewport.scale;
-      // 悬浮端口跟踪：单选形状的端口上悬浮时覆盖层放大该圆点并绘制方向箭头
-      const hp = this.selShape ? this.portHit(this.selShape, p, scale) : null;
-      if (hp !== this.hoverPort) {
-        this.hoverPort = hp;
-        this.app.render();
-      }
-      // 悬浮连线跟踪：只有鼠标不压在任何形状上才考虑 edge 悬浮（形状层在上、edge 层在下，
-      // 被形状遮住的 edge 不该响应；命中时浅蓝色高亮并提升到连线层最上，防止被其他连线遮住）
-      const shapeHit = this.hitShape(p);
-      const he = shapeHit ? null : this.hitEdge(p, scale);
-      if (he !== this.hoverEdge) {
-        if (this.hoverEdge) this.hoverEdge.hovered = false;
-        this.hoverEdge = he;
-        if (he) {
-          he.hovered = true;
-          this.raiseEdgeTop(he);
-        }
-        this.app.render();
-      }
+      // 光标反馈先行：手柄/边线给缩放光标、连线端点手柄给移动光标
       let cursor: string | null = null;
       // 多选组合框的手柄/边线优先给缩放光标
       const mb = this.multiBounds;
@@ -1076,6 +1058,28 @@ export class FlowChart {
         this.edgeHandleHit(this.selection, p, scale)
       )
         cursor = "move";
+      // 悬浮端口跟踪：单选形状的端口上悬浮时覆盖层放大该圆点并绘制方向箭头
+      const hp = this.selShape ? this.portHit(this.selShape, p, scale) : null;
+      if (hp !== this.hoverPort) {
+        this.hoverPort = hp;
+        this.app.render();
+      }
+      // 悬浮连线跟踪：只有鼠标不压在任何形状或覆盖层手柄/端口上才考虑 edge 悬浮
+      //（形状层在上、edge 层在下，被形状遮住的 edge 不该响应；覆盖层手柄不参与
+      // 场景命中，但端点手柄压在连线上、端口浮在连线经过处，悬浮时不应穿透
+      // 高亮下层连线——光标反馈已表达交互意图）
+      const onHandle = cursor !== null || hp !== null;
+      const shapeHit = this.hitShape(p);
+      const he = onHandle || shapeHit ? null : this.hitEdge(p, scale);
+      if (he !== this.hoverEdge) {
+        if (this.hoverEdge) this.hoverEdge.hovered = false;
+        this.hoverEdge = he;
+        if (he) {
+          he.hovered = true;
+          this.raiseEdgeTop(he);
+        }
+        this.app.render();
+      }
       // 连线、节点、空白区域统一 default 光标，悬浮反馈由视觉（浅蓝色）而非光标表达
       this.options.canvas.style.cursor = cursor ?? "";
       return;
