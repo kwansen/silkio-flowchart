@@ -1072,8 +1072,13 @@ export class FlowChart {
       const shapeHit = this.hitShape(p);
       const he = onHandle || shapeHit ? null : this.hitEdge(p, scale);
       if (he !== this.hoverEdge) {
-        if (this.hoverEdge) this.hoverEdge.hovered = false;
+        const prev = this.hoverEdge;
+        if (prev) prev.hovered = false;
         this.hoverEdge = he;
+        // 悬浮离开（含移向另一条连线）时把激活连线重新置顶，不再被刚才的
+        // 悬浮连线遮盖；随后提升新悬浮的连线，保证悬浮中的连线始终在最顶层
+        if (prev && this.selection instanceof FlowEdge && this.selection !== he)
+          this.raiseEdgeTop(this.selection);
         if (he) {
           he.hovered = true;
           this.raiseEdgeTop(he);
