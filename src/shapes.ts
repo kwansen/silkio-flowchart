@@ -175,6 +175,20 @@ export class Parallelogram extends Shape {
     return polygonBoundaryT(this.poly, cx, cy, x - cx, y - cy) >= 1;
   }
 
+  // 左右端口补偿到斜边中点（左斜边 x = k/2、右斜边 x = w − k/2），
+  // 使连线端点与对接手柄落在可见边界上；上下端口仍在上下边中点
+  portAt(dir: "top" | "right" | "bottom" | "left") {
+    const k = this.skew;
+    const local = {
+      top: { x: this.width / 2, y: 0 },
+      right: { x: this.width - k / 2, y: this.height / 2 },
+      bottom: { x: this.width / 2, y: this.height },
+      left: { x: k / 2, y: this.height / 2 },
+    }[dir];
+    const p = this.getWorldTransform().transformPoint(local);
+    return { x: p.x, y: p.y };
+  }
+
   protected drawPath(ctx: CanvasRenderingContext2D) {
     const [a, b, c, d] = this.poly;
     ctx.moveTo(a.x, a.y);
