@@ -4,6 +4,8 @@ import { TextEditor } from "@silker/plugin-text-editor";
 import type { TextEditorCapability } from "@silker/plugin-text-editor";
 import { Exporter, EXPORT_CAPABILITY } from "@silker/plugin-exporter";
 import type { ExportOptions } from "@silker/plugin-exporter";
+import { Selection, selectionCapabilityKey } from "@silker/plugin-selection";
+import type { SelectionCapability } from "@silker/plugin-selection";
 import { createShape } from "./shapes";
 import { Shape } from "./Shape";
 import {
@@ -103,10 +105,8 @@ class SelectionOverlay extends Node {
       // 节点拖拽对齐参考线：v 为竖线 x 坐标、h 为横线 y 坐标（世界坐标），
       // spacing 为等间距测量线段
       guides: SnapGuides | null;
-      // 框选矩形（拖拽中）或多选组合 bounds（落定后），样式与单选框一致
+      // 框选拖拽中（插件橡皮筋之外的）实时组合框或多选组合 bounds，样式与单选框一致
       marquee: Bounds | null;
-      // 左键拖拽中的框选矩形：半透明纯矩形，无手柄（同思维导图 Marquee 样式）
-      dragRect: Bounds | null;
     },
   ) {
     super();
@@ -122,18 +122,9 @@ class SelectionOverlay extends Node {
       link,
       guides,
       marquee,
-      dragRect,
     } = this.getState();
     const k = 1 / scale;
     ctx.save();
-    // 左键拖拽中的框选矩形：半透明填充 + 半透明描边的纯矩形（与思维导图一致）
-    if (dragRect) {
-      ctx.fillStyle = "rgba(59, 130, 246, 0.08)";
-      ctx.strokeStyle = "rgba(59, 130, 246, 0.6)";
-      ctx.lineWidth = 1 * k;
-      ctx.fillRect(dragRect.x, dragRect.y, dragRect.width, dragRect.height);
-      ctx.strokeRect(dragRect.x, dragRect.y, dragRect.width, dragRect.height);
-    }
     // 框选框 / 多选组合框：与单选框同样式（边框 + 四角手柄），无连线端口
     if (marquee) {
       ctx.strokeStyle = SELECT_COLOR;
@@ -330,8 +321,8 @@ export interface FlowChartOptions {
   onChange?: (type: FlowChangeType) => void;
 }
 
-// 交互会话：节点拖拽移动（多选时为组合移动）/ 拖拽缩放 / 空白按下（可拖出框选）
-// / 框选组合缩放 / 端口拖拽连线 / 连线端点重接
+// 交互会话：节点拖拽移动（多选时为组合移动）/ 拖拽缩放 / 框选组合缩放
+// / 端口拖拽连线 / 连线端点重接（空白按下由选中插件的框选会话接管，不经会话）
 type Session =
   | {
       kind: "move";
@@ -351,7 +342,6 @@ type Session =
       start: { x: number; y: number };
       origin: Bounds;
     }
-  | { kind: "blank"; start: { x: number; y: number }; rect: Bounds | null }
   | {
       kind: "group-resize";
       handle: ResizeHandle;
@@ -383,10 +373,11 @@ export class FlowChart {
   private editor: TextEditorCapability;
   private shapes = new Map<string, Shape>();
   private edges: FlowEdge[] = [];
-  // 当前选中：形状或连线
-  private selection: Shape | FlowEdge | null = null;
-  // 多选（框选）：非空时为组合选中态，selection 置空
-  private multi: Shape[] = [];
+  // 选中能力（Selection 插件 install 时注册）：单选/多选模型统一存取，
+  // items 为形状或连线（多选组合只含形状）；selected 高亮与置顶联动由本场景维护
+  private sel: SelectionCapability<Shape | FlowEdge>;
+  // 框选拖拽中的实时组合框（已框中节点的并集 bounds，供覆盖层绘制；松手后清空）
+  private marqueeCombo: Bounds | null = null;
   private editing: Shape | null = null;
   private session: Session | null = null;
   private overlay: SelectionOverlay;
@@ -426,14 +417,34 @@ export class FlowChart {
     });
     this.app.use(editor);
     this.editor = editor;
+    // 安装选中插件：单选/多选模型与框选会话（机制），选中语义（selected 高亮、
+    // 连线置顶等）由本场景定义；框选命中规则 = 与矩形相交的形状
+    this.app.use(
+      new Selection<Shape | FlowEdge>({
+        hitRect: (rect) => this.marqueeHits(rect),
+      }),
+    );
+    this.sel = this.app.require(selectionCapabilityKey<Shape | FlowEdge>());
+    // 拖框中实时显示已框中节点的整体选框（随拖拽更新，未框中节点时不显示）
+    this.sel.onMarqueeMove = (_rect, hits) => {
+      this.marqueeCombo = hits.length ? this.unionBounds(hits) : null;
+    };
+    // 框选落定：单个退化为普通单选，多个进入组合选中，落空保持无选中
+    this.sel.onMarqueeEnd = (_rect, hits) => {
+      this.marqueeCombo = null;
+      if (hits.length === 1) this.select(hits[0]);
+      else if (hits.length > 1) {
+        this.sel.set(hits);
+        this.app.requestRender();
+      }
+    };
     this.load(options.data);
     // 选中框覆盖层置于最上层（registerShape 追加新节点后需 raiseOverlay 保持）
     this.overlay = new SelectionOverlay(() => {
       const scale = this.app.renderer.viewport.scale;
       const dirs = ["top", "right", "bottom", "left"] as const;
       const selShape = this.selShape;
-      const selEdge =
-        this.selection instanceof FlowEdge ? this.selection : null;
+      const selEdge = this.selEdge;
       return {
         shape: selShape,
         scale,
@@ -457,17 +468,8 @@ export class FlowChart {
           : null,
         guides: this.guides,
         // 框选拖拽中：实时显示已框中节点的整体选框（随拖拽更新，未框中节点时
-        // 不显示），拖拽矩形本身由 dragRect 以纯矩形样式绘制；落定后为多选组合 bounds
-        marquee: (() => {
-          const s = this.session;
-          if (s && s.kind === "blank") {
-            if (!s.rect) return null;
-            const hits = this.marqueeHits(s.rect);
-            return hits.length ? this.unionBounds(hits) : null;
-          }
-          return this.multiBounds;
-        })(),
-        dragRect: this.session?.kind === "blank" ? this.session.rect : null,
+        // 不显示），橡皮筋矩形由选中插件绘制；落定后为多选组合 bounds
+        marquee: this.marqueeCombo ?? this.multiBounds,
       };
     });
     this.app.add(this.overlay);
@@ -499,15 +501,15 @@ export class FlowChart {
 
   // 删除当前选中（形状连同其关联连线，或单条连线；多选时删除全部成员）
   deleteSelected() {
-    if (this.multi.length) {
-      const list = [...this.multi];
-      this.multi = [];
+    if (this.sel.items.length > 1) {
+      const list = [...this.selShapes];
+      this.sel.clear();
       list.forEach((s) => this.removeShape(s));
       this.app.requestRender();
       this.onChange?.("delete");
       return;
     }
-    const sel = this.selection;
+    const sel = this.sel.items[0];
     if (!sel) return;
     if (sel instanceof FlowEdge) {
       this.select(null);
@@ -671,26 +673,29 @@ export class FlowChart {
   }
 
   private select(sel: Shape | FlowEdge | null) {
-    // 多选与单选互斥：任何单选变化都清空组合选中
-    const hadMulti = this.multi.length > 0;
-    this.multi = [];
+    // 多选与单选互斥：选中集合整体替换，天然互斥
     // 选中变化后悬浮端口不再有效（可能指向新选中形状的错误方向）
     this.hoverPort = null;
-    if (this.selection === sel && !hadMulti) return;
-    if (this.selection) this.selection.selected = false;
-    this.selection = sel;
     if (sel) {
+      if (this.sel.items.length === 1 && this.sel.items[0] === sel) return;
+      for (const it of this.sel.items) it.selected = false;
+      this.sel.set([sel]);
       sel.selected = true;
       // 激活的连线提到连线层最上再渲染，避免激活样式被其他连线覆盖
       if (sel instanceof FlowEdge) this.raiseEdgeTop(sel);
+    } else {
+      if (!this.sel.items.length) return;
+      for (const it of this.sel.items) it.selected = false;
+      this.sel.clear();
     }
     this.app.requestRender();
   }
 
   // 多选组合的包围盒（少于 2 个形状时视为无组合）
   private get multiBounds(): Bounds | null {
-    if (this.multi.length < 2) return null;
-    return this.unionBounds(this.multi);
+    const shapes = this.selShapes;
+    if (shapes.length < 2) return null;
+    return this.unionBounds(shapes);
   }
 
   // 多个形状的并集包围盒（接受任意含 x/y/width/height 的载体，含原始位置快照）
@@ -738,16 +743,25 @@ export class FlowChart {
     }
   }
 
-  // 选中的形状（选中连线时为 null）
+  // 选中的形状（选中连线或无选中时为 null）
   private get selShape(): Shape | null {
-    return this.selection instanceof Shape ? this.selection : null;
+    const items = this.sel.items;
+    return items.length === 1 && items[0] instanceof Shape
+      ? (items[0] as Shape)
+      : null;
   }
 
-  // 当前选中的形状列表（多选优先，单选时为单个）——单/多选共用一套命中与移动逻辑
+  // 选中的连线（选中形状或无选中时为 null）
+  private get selEdge(): FlowEdge | null {
+    const items = this.sel.items;
+    return items.length === 1 && items[0] instanceof FlowEdge
+      ? (items[0] as FlowEdge)
+      : null;
+  }
+
+  // 当前选中的形状列表（多选组合或单选形状；选中连线时为空）——单/多选共用一套命中与移动逻辑
   private get selShapes(): Shape[] {
-    if (this.multi.length) return this.multi;
-    const s = this.selShape;
-    return s ? [s] : [];
+    return this.sel.items.filter((s): s is Shape => s instanceof Shape);
   }
 
   // 命中连线：距折线各段容差内命中（世界坐标容差）
@@ -994,8 +1008,9 @@ export class FlowChart {
       }
     }
     // 激活连线的首尾手柄：拖拽重接该端（优先于命中其他形状）
-    if (this.selection instanceof FlowEdge) {
-      const edge = this.selection;
+    const selEdgeDown = this.selEdge;
+    if (selEdgeDown) {
+      const edge = selEdgeDown;
       const which = this.edgeHandleHit(edge, p, scale);
       if (which) {
         // 直接拖拽原连线：被拖端进入拖拽态，路由以光标为虚拟端口
@@ -1023,7 +1038,7 @@ export class FlowChart {
           handle,
           start: p,
           origin: mb,
-          origins: this.multi.map((s) => ({
+          origins: this.selShapes.map((s) => ({
             shape: s,
             x: s.x,
             y: s.y,
@@ -1036,7 +1051,7 @@ export class FlowChart {
     }
     const hit = this.hitShape(p);
     if (hit) {
-      if (this.multi.includes(hit)) {
+      if (this.sel.items.includes(hit)) {
         // 组内形状：整体移动，保持多选（单击不动则抬起时塌缩为单选）
         this.session = {
           kind: "move",
@@ -1044,7 +1059,7 @@ export class FlowChart {
           start: p,
           origin: { x: hit.x, y: hit.y },
           moved: false,
-          group: this.multi
+          group: this.selShapes
             .filter((s) => s !== hit)
             .map((s) => ({ shape: s, x: s.x, y: s.y })),
         };
@@ -1097,9 +1112,9 @@ export class FlowChart {
         return;
       }
     }
-    // 空白按下：立即取消选中，可拖出框选矩形（光标保持 default）
+    // 空白按下：立即取消选中，框选会话由选中插件接管（橡皮筋 + 松手落定多选）
     this.select(null);
-    this.session = { kind: "blank", start: p, rect: null };
+    this.sel.beginMarquee(e);
   }
 
   private onMove(e: MouseEvent) {
@@ -1129,10 +1144,11 @@ export class FlowChart {
         cursor = this.selShape
           ? this.hoverCursor(this.selShape, p, scale)
           : null;
+      const selEdgeHover = this.selEdge;
       if (
         cursor === null &&
-        this.selection instanceof FlowEdge &&
-        this.edgeHandleHit(this.selection, p, scale)
+        selEdgeHover &&
+        this.edgeHandleHit(selEdgeHover, p, scale)
       )
         cursor = "move";
       // 悬浮端口跟踪：单选形状的端口上悬浮时覆盖层放大该圆点并绘制方向箭头
@@ -1154,8 +1170,9 @@ export class FlowChart {
         this.hoverEdge = he;
         // 悬浮离开（含移向另一条连线）时把激活连线重新置顶，不再被刚才的
         // 悬浮连线遮盖；随后提升新悬浮的连线，保证悬浮中的连线始终在最顶层
-        if (prev && this.selection instanceof FlowEdge && this.selection !== he)
-          this.raiseEdgeTop(this.selection);
+        const selEdgeHover2 = this.selEdge;
+        if (prev && selEdgeHover2 && selEdgeHover2 !== he)
+          this.raiseEdgeTop(selEdgeHover2);
         if (he) {
           he.hovered = true;
           this.raiseEdgeTop(he);
@@ -1214,21 +1231,6 @@ export class FlowChart {
       this.app.requestRender();
     } else if (s.kind === "group-resize") {
       this.applyGroupResize(s, p.x - s.start.x, p.y - s.start.y);
-      this.app.requestRender();
-    } else if (s.kind === "blank") {
-      // 框选矩形：拖动超过 3 屏幕像素才显示，避免与单击取消选中混淆
-      const k = 3 / this.app.renderer.viewport.scale;
-      const w = Math.abs(p.x - s.start.x);
-      const h = Math.abs(p.y - s.start.y);
-      s.rect =
-        w > k || h > k
-          ? {
-              x: Math.min(s.start.x, p.x),
-              y: Math.min(s.start.y, p.y),
-              width: w,
-              height: h,
-            }
-          : null;
       this.app.requestRender();
     } else if (s.kind === "link") {
       const scale = this.app.renderer.viewport.scale;
@@ -1459,23 +1461,6 @@ export class FlowChart {
       ) {
         this.onChange?.("resize");
       }
-    } else if (s.kind === "blank") {
-      // 框选落定：与矩形相交的形状进入多选；仅一个时退化为普通单选；
-      // 落空（或未拖出矩形）时清除选中——render 覆盖残留的框选画面
-      if (s.rect) {
-        const hits = this.marqueeHits(s.rect);
-        if (hits.length === 1) {
-          this.select(hits[0]);
-        } else if (hits.length > 1) {
-          this.multi = hits;
-          this.app.requestRender();
-        } else {
-          this.select(null); // 落空清除选中；select 有无变化守卫可能跳过重绘
-          this.app.requestRender(); // 故显式渲染，覆盖残留的框选画面
-        }
-      } else {
-        this.app.requestRender();
-      }
     } else if (s.kind === "edge-move") {
       // 端点重接结束：退出拖拽态；吸附目标按其端口重接（任意节点，含本连线
       // 两端节点）；未吸附时按落点命中节点重接（主导方向自动选边），纯点击
@@ -1553,7 +1538,7 @@ export class FlowChart {
     if (this.editing || this.editor.hasFocus()) return;
     // Delete/Backspace：删除选中
     if (e.key === "Delete" || e.key === "Backspace") {
-      if (!this.selection && !this.multi.length) return;
+      if (!this.sel.items.length) return;
       e.preventDefault();
       this.deleteSelected();
       return;
