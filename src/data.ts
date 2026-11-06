@@ -2,7 +2,13 @@ import type { PortDir } from './FlowEdge'
 
 // 流程图数据模型：节点（形状 + 位置 + 文本）与连线（两端节点 id），
 // 与渲染模型（Shape / FlowEdge）解耦，toJSON 从活模型导出最新位置
-export type ShapeKind = 'rect' | 'diamond' | 'ellipse'
+export type ShapeKind =
+  | 'rect'
+  | 'diamond'
+  | 'ellipse'
+  | 'parallelogram'
+  | 'hexagon'
+  | 'database'
 
 export interface FlowNodeData {
   id?: string

@@ -49,6 +49,9 @@ const addAtCenter = (shape: ShapeKind, text: string) => {
 document.getElementById("add-rect")!.addEventListener("click", () => addAtCenter("rect", "新步骤"));
 document.getElementById("add-diamond")!.addEventListener("click", () => addAtCenter("diamond", "新判断"));
 document.getElementById("add-ellipse")!.addEventListener("click", () => addAtCenter("ellipse", "新端点"));
+document.getElementById("add-para")!.addEventListener("click", () => addAtCenter("parallelogram", "输入数据"));
+document.getElementById("add-hexagon")!.addEventListener("click", () => addAtCenter("hexagon", "准备阶段"));
+document.getElementById("add-database")!.addEventListener("click", () => addAtCenter("database", "存储数据"));
 
 document.getElementById("delete-btn")!.addEventListener("click", () => flowchart.deleteSelected());
 
@@ -56,6 +59,9 @@ document.getElementById("delete-btn")!.addEventListener("click", () => flowchart
 document.getElementById("to-rect")!.addEventListener("click", () => flowchart.replaceSelected("rect"));
 document.getElementById("to-diamond")!.addEventListener("click", () => flowchart.replaceSelected("diamond"));
 document.getElementById("to-ellipse")!.addEventListener("click", () => flowchart.replaceSelected("ellipse"));
+document.getElementById("to-para")!.addEventListener("click", () => flowchart.replaceSelected("parallelogram"));
+document.getElementById("to-hexagon")!.addEventListener("click", () => flowchart.replaceSelected("hexagon"));
+document.getElementById("to-database")!.addEventListener("click", () => flowchart.replaceSelected("database"));
 
 // 适应视图：按全部节点包围盒拟合视口（Viewport 插件的 fit）
 document.getElementById("fit-btn")!.addEventListener("click", () => {
