@@ -1453,10 +1453,14 @@ export class FlowChart {
     }
   }
 
-  // 端口点击快速创建：沿端口方向新建默认矩形节点并连线（边缘间距
-  // CLICK_CREATE_GAP，垂直于方向的轴线与源节点中心对齐），新节点进入选中态
+  // 端口点击快速创建：沿端口方向新建与源节点同类型、同尺寸的节点并连线
+  //（边缘间距 CLICK_CREATE_GAP，垂直于方向的轴线与源节点中心对齐），
+  // 新节点进入选中态
   private createNodeInDirection(source: Shape, dir: PortDir) {
-    const shape = createShape("rect", {});
+    const shape = createShape(source.kind, {
+      width: source.width,
+      height: source.height,
+    });
     if (dir === "right") {
       shape.x = source.x + source.width + CLICK_CREATE_GAP;
       shape.y = source.y + (source.height - shape.height) / 2;
