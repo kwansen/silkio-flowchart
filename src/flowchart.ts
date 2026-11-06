@@ -8,6 +8,7 @@ import {
   FlowEdge,
   OPPOSITE_DIR,
   PORT_DIR_VEC,
+  PORT_STUB,
   renderEdgePreview,
 } from "./FlowEdge";
 import type { FlowEdgeHints, PortDir } from "./FlowEdge";
@@ -54,12 +55,22 @@ class LinkPreview extends Node {
   to = { x: 0, y: 0 };
   fromDir: PortDir = "right";
   toDir: PortDir = "left";
+  // 两端直段长度：源端在创建时按其 portStub 设置，目标端吸附时跟随目标节点
+  fromStub = PORT_STUB;
+  toStub = PORT_STUB;
 
   render(ctx: CanvasRenderingContext2D) {
     ctx.save();
     renderEdgePreview(
       ctx,
-      FlowEdge.routeBetween(this.from, this.fromDir, this.to, this.toDir),
+      FlowEdge.routeBetween(
+        this.from,
+        this.fromDir,
+        this.to,
+        this.toDir,
+        this.fromStub,
+        this.toStub,
+      ),
     );
     ctx.restore();
   }
@@ -944,6 +955,7 @@ export class FlowChart {
         const preview = new LinkPreview();
         preview.from = sel.portAt(dir);
         preview.fromDir = dir;
+        preview.fromStub = sel.portStub(dir);
         preview.to = p;
         preview.toDir = this.previewToDir(dir, preview.from, p);
         this.session = {
@@ -1227,8 +1239,10 @@ export class FlowChart {
       if (this.linkTarget && this.linkSnap) {
         s.preview.to = this.linkTarget.portAt(this.linkSnap);
         s.preview.toDir = this.linkSnap;
+        s.preview.toStub = this.linkTarget.portStub(this.linkSnap);
       } else {
         s.preview.to = p;
+        s.preview.toStub = PORT_STUB;
         s.preview.toDir = this.previewToDir(s.sourceDir, s.preview.from, p);
       }
       this.app.requestRender();

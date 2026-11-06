@@ -1,5 +1,6 @@
 import { Node, Text } from '@silker/core'
 import type { NodeOptions } from '@silker/core'
+import { PORT_STUB } from './FlowEdge'
 import type { ShapeKind } from './data'
 
 // 形状样式：边界绘制 + 文本外观
@@ -102,6 +103,14 @@ export abstract class Shape extends Node {
   center() {
     const p = this.getWorldTransform().transformPoint({ x: this.width / 2, y: this.height / 2 })
     return { x: p.x, y: p.y }
+  }
+
+  // 连线出口/入口直段长度：端口沿外法向引出的锁定方向段（世界坐标）。
+  // 默认端口位于包围盒边上，转折点落在包围盒外 PORT_STUB 处；端口被补偿
+  // 内收的形状（如平行四边形斜边中点）覆写 portAt 时需同时覆写此方法
+  // 加上内收量，保证转折点仍在包围盒外，后续正交段不穿过形状
+  portStub(_dir: 'top' | 'right' | 'bottom' | 'left') {
+    return PORT_STUB
   }
 
   // 四向端口（边界中点，世界坐标）

@@ -1,5 +1,6 @@
 import { Shape } from "./Shape";
 import type { ShapeOptions } from "./Shape";
+import { PORT_STUB } from "./FlowEdge";
 import type { ShapeKind } from "./data";
 
 // 圆角矩形（流程步骤）：默认矩形命中
@@ -187,6 +188,14 @@ export class Parallelogram extends Shape {
     }[dir];
     const p = this.getWorldTransform().transformPoint(local);
     return { x: p.x, y: p.y };
+  }
+
+  // 左右端口内收 k/2，直段加上内收量使转折点仍落在包围盒外 PORT_STUB 处，
+  // 后续正交段（竖行）不会穿过斜边；上下端口在包围盒边上，用默认值
+  portStub(dir: "top" | "right" | "bottom" | "left") {
+    return dir === "left" || dir === "right"
+      ? PORT_STUB + this.skew / 2
+      : PORT_STUB;
   }
 
   protected drawPath(ctx: CanvasRenderingContext2D) {

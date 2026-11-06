@@ -109,25 +109,34 @@ export class FlowEdge extends Edge {
 
   // 生成正交路径点（相邻重复点已剔除）。首段沿源端口外法向、末段沿目标端口
   // 外法向反向进入，方向锁定；中段按方向组合与相对位置选 Z 形（顺畅）或
-  // L 形 / S 形（绕行，无折返）
+  // L 形 / S 形（绕行，无折返）。两端直段长度取自各自节点的 portStub
   private route(): EdgePoint[] {
     if (this.dragWhich === 'from') {
-      return FlowEdge.routeBetween(this.dragPoint, this.dragDir, this.toNode.portAt(this.toDir), this.toDir)
+      return FlowEdge.routeBetween(this.dragPoint, this.dragDir, this.toNode.portAt(this.toDir), this.toDir, PORT_STUB, this.toNode.portStub(this.toDir))
     }
     if (this.dragWhich === 'to') {
-      return FlowEdge.routeBetween(this.fromNode.portAt(this.fromDir), this.fromDir, this.dragPoint, this.dragDir)
+      return FlowEdge.routeBetween(this.fromNode.portAt(this.fromDir), this.fromDir, this.dragPoint, this.dragDir, this.fromNode.portStub(this.fromDir), PORT_STUB)
     }
-    return FlowEdge.routeBetween(this.fromNode.portAt(this.fromDir), this.fromDir, this.toNode.portAt(this.toDir), this.toDir)
+    return FlowEdge.routeBetween(
+      this.fromNode.portAt(this.fromDir),
+      this.fromDir,
+      this.toNode.portAt(this.toDir),
+      this.toDir,
+      this.fromNode.portStub(this.fromDir),
+      this.toNode.portStub(this.toDir),
+    )
   }
 
   // 两端口间的正交路由：实例连线与拖拽预览共用。
-  // 首段沿 fromDir 外法向引出 stub、末段沿 toDir 外法向反向进入，方向锁定
-  static routeBetween(s: EdgePoint, fromDir: PortDir, t: EdgePoint, toDir: PortDir): EdgePoint[] {
+  // 首段沿 fromDir 外法向引出 fromStub 直段、末段沿 toDir 外法向反向进入，
+  // 方向锁定；直段长度由两端节点的 portStub 决定（默认 PORT_STUB，
+  // 端口内收的形状覆写以把转折点推到包围盒外）
+  static routeBetween(s: EdgePoint, fromDir: PortDir, t: EdgePoint, toDir: PortDir, fromStub = PORT_STUB, toStub = PORT_STUB): EdgePoint[] {
     const fv = PORT_DIR_VEC[fromDir]
     const tv = PORT_DIR_VEC[toDir]
     // 沿外法向引出固定长度直段，保证出口/入口段方向始终与端口方向一致
-    const s2 = { x: s.x + fv.x * PORT_STUB, y: s.y + fv.y * PORT_STUB }
-    const t2 = { x: t.x + tv.x * PORT_STUB, y: t.y + tv.y * PORT_STUB }
+    const s2 = { x: s.x + fv.x * fromStub, y: s.y + fv.y * fromStub }
+    const t2 = { x: t.x + tv.x * toStub, y: t.y + tv.y * toStub }
     const fh = fv.x !== 0
     const th = tv.x !== 0
     if (fh && th) {
@@ -279,8 +288,9 @@ function trimEdgeEnd(pts: EdgePoint[]): EdgePoint[] {
   return out
 }
 
-// 出口/入口直段长度（世界坐标）：端口沿外法向引出的锁定方向段
-const PORT_STUB = 24
+// 出口/入口直段长度（世界坐标）：端口沿外法向引出的锁定方向段；
+// 端口位于包围盒边上时转折点落在包围盒外该长度处（Shape.portStub 默认值）
+export const PORT_STUB = 24
 
 // 点到线段的最短距离
 function distSeg(p: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }): number {
