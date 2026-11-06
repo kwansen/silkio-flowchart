@@ -14,13 +14,24 @@ export interface SnapGuides { v: number[]; h: number[]; spacing: SpacingGuide[] 
 export interface SnapOptions {
   snapTol: number    // 对齐吸附阈值（世界坐标，调用方按视口缩放折算）
   spacingTol: number // 等间距吸附阈值（世界坐标）
+  // 迟滞状态：上一帧对齐吸附在两轴上是否处于吸附态。已吸附的轴本帧用加倍的
+  // "释放容差"维持吸附——光标在阈值边界抖动时吸附不反复进出，参考线不闪烁；
+  // 由调用方在拖拽会话内逐帧回传，会话结束清零
+  prev?: { x: boolean; y: boolean }
 }
 
 export interface SnapResult {
   dx: number // 吸附产生的水平位移（应用：box.x += dx）
   dy: number // 吸附产生的垂直位移
   guides: SnapGuides | null // 无任何参考线时为 null
+  // 两轴对齐吸附是否处于吸附态（等间距吸附不计入）：供调用方作为下一帧迟滞状态回传
+  snappedX: boolean
+  snappedY: boolean
 }
+
+// 释放容差倍数：处于吸附态的轴用 snapTol 的该倍数做匹配（迟滞区间），
+// 进入吸附用原阈值、退出需越过更大的阈值，边界抖动不会导致吸附反复进出
+const RELEASE_FACTOR = 2
 
 // 间隙聚类取众数：簇内相邻差值 <= tol，出现次数 >= 2 时取簇均值，否则 NaN
 function modeGap(gaps: number[], tol: number): number {
@@ -280,11 +291,15 @@ function applySpacingSnap(
 // 等间距吸附优先——某轴发生等间距吸附后该轴不再做对齐吸附，
 // 避免两类吸附点相邻时（如间距 40px 恰与中线对齐差 1px）来回切换产生抖动；
 // 对齐吸附仅同类型基准配对——左对左、中对中、右对右（上/中/下同理），取各类
-// 最小差值做吸附平移；吸附后收集所有阈值内已对齐的基准（等宽节点上下
-// 对齐时中线随之对齐，跳过中线参考线）。
+// 最小差值做吸附平移；吸附后仅在实际吸附的轴上收集精确对齐的基准做参考线
+//（等宽节点上下对齐时中线随之对齐，跳过中线参考线）；opts.prev 提供迟滞——
+// 上一帧已吸附的轴用加倍的释放容差维持吸附，边界抖动不闪烁。
 // 不修改传入的 box，返回位移与参考线，由调用方应用
 export function computeSnap(box: Bounds, candidates: readonly Bounds[], opts: SnapOptions): SnapResult {
   const tol = opts.snapTol
+  // 迟滞：上一帧已吸附的轴放宽到释放容差，未吸附的轴用进入阈值
+  const tolX = opts.prev?.x ? tol * RELEASE_FACTOR : tol
+  const tolY = opts.prev?.y ? tol * RELEASE_FACTOR : tol
   const b: Bounds = { ...box }
   // 等间距吸附优先；该轴已吸附时跳过对齐吸附
   const spacing = applySpacingSnap(b, candidates, opts.spacingTol)
@@ -300,37 +315,48 @@ export function computeSnap(box: Bounds, candidates: readonly Bounds[], opts: Sn
     for (let i = 0; i < 3; i++) {
       if (!skipX) {
         const d = Math.abs(oxs[i] - xs()[i])
-        if (d <= tol && (!bestX || d < bestX.d)) bestX = { d, shift: oxs[i] - xs()[i] }
+        if (d <= tolX && (!bestX || d < bestX.d)) bestX = { d, shift: oxs[i] - xs()[i] }
       }
       if (!skipY) {
         const d2 = Math.abs(oys[i] - ys()[i])
-        if (d2 <= tol && (!bestY || d2 < bestY.d)) bestY = { d: d2, shift: oys[i] - ys()[i] }
+        if (d2 <= tolY && (!bestY || d2 < bestY.d)) bestY = { d: d2, shift: oys[i] - ys()[i] }
       }
     }
   }
   if (bestX) b.x += bestX.shift
   if (bestY) b.y += bestY.shift
-  // 吸附后收集所有已对齐基准（去重，仍仅同类型配对）
+  // 吸附后收集参考线：仅在实际发生对齐吸附的轴上收集，且只收录精确对齐的
+  // 基准（吸附平移后差值为浮点零，EPS 过滤舍入误差）——阈值内"接近对齐"的
+  // 基线不再画线，避免相差几像素也显示对齐、参考线随鼠标移动忽隐忽现；
+  // 等间距吸附的轴由测量线段表达，不重复画对齐线
+  const EPS = 1e-6
   const v = new Set<number>()
   const h = new Set<number>()
-  const vSkip = new Set<number>()
-  const hSkip = new Set<number>()
-  for (const other of candidates) {
-    const oxs = [other.x, other.x + other.width / 2, other.x + other.width]
-    const oys = [other.y, other.y + other.height / 2, other.y + other.height]
-    for (let i = 0; i < 3; i++) {
-      if (Math.abs(oxs[i] - xs()[i]) <= tol) v.add(oxs[i])
-      if (Math.abs(oys[i] - ys()[i]) <= tol) h.add(oys[i])
+  if (bestX) {
+    for (const other of candidates) {
+      const oxs = [other.x, other.x + other.width / 2, other.x + other.width]
+      for (let i = 0; i < 3; i++) {
+        if (Math.abs(oxs[i] - xs()[i]) <= EPS) v.add(oxs[i])
+      }
+      // 左右两边都已精确对齐时宽度必然相等、中线随之对齐，跳过中线参考线
+      if (Math.abs(oxs[0] - xs()[0]) <= EPS && Math.abs(oxs[2] - xs()[2]) <= EPS) v.delete(oxs[1])
     }
-    // 左右两边都已对齐时宽度必然相等、中线随之对齐，跳过中线参考线（上下同理）
-    if (Math.abs(oxs[0] - xs()[0]) <= tol && Math.abs(oxs[2] - xs()[2]) <= tol) vSkip.add(oxs[1])
-    if (Math.abs(oys[0] - ys()[0]) <= tol && Math.abs(oys[2] - ys()[2]) <= tol) hSkip.add(oys[1])
   }
-  for (const m of vSkip) v.delete(m)
-  for (const m of hSkip) h.delete(m)
+  if (bestY) {
+    for (const other of candidates) {
+      const oys = [other.y, other.y + other.height / 2, other.y + other.height]
+      for (let i = 0; i < 3; i++) {
+        if (Math.abs(oys[i] - ys()[i]) <= EPS) h.add(oys[i])
+      }
+      // 上下两边都已精确对齐时高度必然相等、中线随之对齐，跳过中线参考线
+      if (Math.abs(oys[0] - ys()[0]) <= EPS && Math.abs(oys[2] - ys()[2]) <= EPS) h.delete(oys[1])
+    }
+  }
   return {
     dx: b.x - box.x,
     dy: b.y - box.y,
+    snappedX: !skipX && bestX !== null,
+    snappedY: !skipY && bestY !== null,
     guides: v.size || h.size || spacing.guides.length
       ? { v: [...v], h: [...h], spacing: spacing.guides }
       : null,

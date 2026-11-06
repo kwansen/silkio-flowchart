@@ -386,6 +386,10 @@ export class FlowChart {
   private hoverEdge: FlowEdge | null = null;
   // 节点拖拽对齐参考线（applySnap/applySpacingSnap 更新，拖拽结束清除）
   private guides: SnapGuides | null = null;
+  // 吸附迟滞状态：上一帧两轴是否处于对齐吸附态（拖拽会话内逐帧回传给
+  // computeSnap，会话结束清零），已吸附的轴用加倍的释放容差维持吸附，
+  // 光标在阈值边界抖动时吸附不反复进出
+  private snapPrev = { x: false, y: false };
   private onChange?: (type: FlowChangeType) => void;
   private cleanups: Array<() => void> = [];
 
@@ -627,8 +631,10 @@ export class FlowChart {
     return this.unionBounds(this.multi);
   }
 
-  // 多个形状的并集包围盒
-  private unionBounds(shapes: Shape[]): Bounds {
+  // 多个形状的并集包围盒（接受任意含 x/y/width/height 的载体，含原始位置快照）
+  private unionBounds(
+    shapes: Array<{ x: number; y: number; width: number; height: number }>,
+  ): Bounds {
     let x0 = Infinity;
     let y0 = Infinity;
     let x1 = -Infinity;
@@ -1099,15 +1105,31 @@ export class FlowChart {
     }
     const p = this.toWorld(e);
     if (s.kind === "move") {
-      s.shape.x = s.origin.x + (p.x - s.start.x);
-      s.shape.y = s.origin.y + (p.y - s.start.y);
       s.moved = true;
       if (s.group) {
         // 组合移动：以整体框（成员并集 bounds）的四边/中线与外部节点对齐吸附，
         // 全部组内成员（含被按住的主节点）不作为参考目标，避免内部基线；
-        // 全量拖拽位移 + 吸附修正统一应用到全部成员
+        // 全量拖拽位移 + 吸附修正统一应用到全部成员。
+        // 吸附基准框必须由各成员"按下时原始位置 + 本帧原始位移"构成——若混入
+        // 已被上一帧吸附修正过的当前位置，上一帧的修正量会泄漏进本帧的吸附
+        // 计算，吸附会在开/关之间震荡（参考线闪烁、整体位置抖动）
         const exclude = new Set([s.shape, ...s.group.map((g) => g.shape)]);
-        const b0 = this.unionBounds([s.shape, ...exclude]);
+        const b0 = this.unionBounds([
+          {
+            x: s.origin.x,
+            y: s.origin.y,
+            width: s.shape.width,
+            height: s.shape.height,
+          },
+          ...s.group.map((g) => ({
+            x: g.x,
+            y: g.y,
+            width: g.shape.width,
+            height: g.shape.height,
+          })),
+        ]);
+        b0.x += p.x - s.start.x;
+        b0.y += p.y - s.start.y;
         const box: Bounds = { ...b0 };
         this.applySnap(box, exclude);
         const mx = p.x - s.start.x + (box.x - b0.x);
@@ -1119,6 +1141,8 @@ export class FlowChart {
           g.shape.y = g.y + my;
         }
       } else {
+        s.shape.x = s.origin.x + (p.x - s.start.x);
+        s.shape.y = s.origin.y + (p.y - s.start.y);
         this.applySnap(s.shape);
       }
       this.app.render();
@@ -1245,7 +1269,9 @@ export class FlowChart {
     const r = computeSnap(shape, candidates, {
       snapTol: SNAP_TOLERANCE / scale,
       spacingTol: SPACING_TOLERANCE / scale,
+      prev: this.snapPrev,
     });
+    this.snapPrev = { x: r.snappedX, y: r.snappedY };
     shape.x += r.dx;
     shape.y += r.dy;
     this.guides = r.guides;
@@ -1338,6 +1364,7 @@ export class FlowChart {
     this.options.canvas.style.cursor = "";
     if (s.kind === "move") {
       this.guides = null;
+      this.snapPrev = { x: false, y: false };
       this.app.render(); // 清除参考线后立即重绘，否则画面残留拖拽时最后一帧
       if (s.moved) this.onChange?.("move");
       else if (s.press && Math.hypot(e.clientX - s.press.x, e.clientY - s.press.y) <= CLICK_MOVE_TOLERANCE)
