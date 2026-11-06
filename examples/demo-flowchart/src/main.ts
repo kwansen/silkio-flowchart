@@ -52,6 +52,11 @@ document.getElementById("add-ellipse")!.addEventListener("click", () => addAtCen
 
 document.getElementById("delete-btn")!.addEventListener("click", () => flowchart.deleteSelected());
 
+// 替换选中节点形状：保留位置、尺寸、文本与连线
+document.getElementById("to-rect")!.addEventListener("click", () => flowchart.replaceSelected("rect"));
+document.getElementById("to-diamond")!.addEventListener("click", () => flowchart.replaceSelected("diamond"));
+document.getElementById("to-ellipse")!.addEventListener("click", () => flowchart.replaceSelected("ellipse"));
+
 // 适应视图：按全部节点包围盒拟合视口（Viewport 插件的 fit）
 document.getElementById("fit-btn")!.addEventListener("click", () => {
   const nodes = flowchart.toJSON().nodes;

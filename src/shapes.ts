@@ -12,7 +12,7 @@ export class RectShape extends Shape {
   }
 
   constructor(options: ShapeOptions = {}) {
-    super("rect", { width: 160, height: 64 }, options);
+    super("rect", { width: 160, height: 99 }, options);
   }
 
   protected boundaryT(dx: number, dy: number) {
@@ -39,7 +39,7 @@ export class Diamond extends Shape {
   }
 
   constructor(options: ShapeOptions = {}) {
-    super("diamond", { width: 160, height: 96 }, options);
+    super("diamond", { width: 160, height: 99 }, options);
   }
 
   // 菱形方程 |dx|/a + |dy|/b = 1，方向系数为该式的倒数
@@ -72,7 +72,7 @@ export class EllipseShape extends Shape {
   }
 
   constructor(options: ShapeOptions = {}) {
-    super("ellipse", { width: 140, height: 64 }, options);
+    super("ellipse", { width: 160, height: 99 }, options);
   }
 
   // 椭圆方程 (dx/a)² + (dy/b)² = 1，方向系数为该式的 -1/2 次幂

@@ -505,6 +505,44 @@ export class FlowChart {
     this.onChange?.("delete");
   }
 
+  // 替换当前选中形状的类型：保留位置、尺寸、文本、id 与全部连线
+  // （连线两端引用直接重绑到新形状，端口方向维持创建时冻结的值不重选边），
+  // 新形状占据原形状的 z 序位置并进入选中态；多选或类型相同时不操作
+  replaceSelected(kind: ShapeKind) {
+    const old = this.selShape;
+    if (!old || old.kind === kind) return;
+    if (this.editing === old) {
+      this.editing = null;
+      this.editor.stop();
+    }
+    const shape = createShape(kind, {
+      id: old.id as string,
+      x: old.x,
+      y: old.y,
+      width: old.width,
+      height: old.height,
+      text: old.text.text,
+    });
+    for (const e of this.edges) {
+      if (e.fromNode === old) e.fromNode = shape;
+      if (e.toNode === old) e.toNode = shape;
+    }
+    const idx = this.app.children.indexOf(old);
+    this.removeTop(old);
+    this.shapes.delete(old.id as string);
+    if (idx !== -1) {
+      shape.parent = null;
+      this.app.children.splice(idx, 0, shape);
+    } else {
+      this.app.add(shape);
+    }
+    this.shapes.set(shape.id as string, shape);
+    this.raiseOverlay();
+    this.select(shape);
+    this.app.requestRender();
+    this.onChange?.("replace");
+  }
+
   // 导出当前数据（位置为最新拖拽结果）
   toJSON(): FlowData {
     return {
