@@ -2,6 +2,8 @@ import { App, Node } from "@silker/core";
 import { Viewport } from "@silker/core-viewport";
 import { TextEditor } from "@silker/plugin-text-editor";
 import type { TextEditorCapability } from "@silker/plugin-text-editor";
+import { Exporter, EXPORT_CAPABILITY } from "@silker/plugin-exporter";
+import type { ExportOptions } from "@silker/plugin-exporter";
 import { createShape } from "./shapes";
 import { Shape } from "./Shape";
 import {
@@ -408,6 +410,8 @@ export class FlowChart {
     this.onChange = options.onChange;
     this.app = new App(options.canvas);
     this.app.use(new Viewport());
+    // 安装导出插件：install 时自注册导出能力，toImage 按能力键消费
+    this.app.use(new Exporter());
     const editor = new TextEditor({
       // 输入实时同步：文本重测后重新居中（不改形状尺寸），覆盖层跟随新位置
       onInput: () => {
@@ -573,6 +577,15 @@ export class FlowChart {
         toDir: e.toDir,
       })),
     };
+  }
+
+  // 导出全部形状与连线为图片（返回 Blob）：委托导出能力离屏渲染，与当前视口无关；
+  // 显式传入形状与连线（不含选中框等覆盖层），绕行连线按路由折线并入包围盒
+  async toImage(options?: ExportOptions): Promise<Blob> {
+    return this.app.require(EXPORT_CAPABILITY).export(
+      [...this.shapes.values(), ...this.edges],
+      options,
+    );
   }
 
   // 卸载事件监听（页面级销毁用）

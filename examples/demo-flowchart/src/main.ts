@@ -89,5 +89,16 @@ document.getElementById("export-btn")!.addEventListener("click", () => {
   URL.revokeObjectURL(url);
 });
 
+// 导出图片：全部形状与连线离屏渲染为 PNG（白底）并触发下载
+document.getElementById("export-img-btn")!.addEventListener("click", async () => {
+  const blob = await flowchart.toImage({ background: "#ffffff" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "flowchart.png";
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
 // 临时调试：暴露实例供浏览器自动化测试定位节点（验证后移除）
 (window as any).__flowchart = flowchart;

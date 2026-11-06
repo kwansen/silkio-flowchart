@@ -1,4 +1,6 @@
 import { Edge } from '@silker/plugin-edge'
+import type { Bounds } from '@silker/core'
+import { pointsBounds } from '@silker/plugin-edge'
 import type { EdgePoint } from '@silker/plugin-edge'
 import type { Shape } from './Shape'
 
@@ -107,10 +109,16 @@ export class FlowEdge extends Edge {
   dragPoint: EdgePoint = { x: 0, y: 0 }
   dragDir: PortDir = 'top'
 
+  // 世界包围盒：按当前路由折线计算（绕行路线的途经点不止首尾两端点），
+  // 箭头尖端即末端口点、线体末端回缩，半线宽外扩已足够覆盖
+  getBounds(): Bounds {
+    return pointsBounds(this.route(), this.lineWidth / 2, this.getWorldTransform())
+  }
+
   // 生成正交路径点（相邻重复点已剔除）。首段沿源端口外法向、末段沿目标端口
   // 外法向反向进入，方向锁定；中段按方向组合与相对位置选 Z 形（顺畅）或
   // L 形 / S 形（绕行，无折返）。两端直段长度取自各自节点的 portStub
-  private route(): EdgePoint[] {
+  protected route(): EdgePoint[] {
     if (this.dragWhich === 'from') {
       return FlowEdge.routeBetween(this.dragPoint, this.dragDir, this.toNode.portAt(this.toDir), this.toDir, PORT_STUB, this.toNode.portStub(this.toDir))
     }

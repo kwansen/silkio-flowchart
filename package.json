@@ -17,7 +17,8 @@
     "@silker/core": "workspace:*",
     "@silker/core-viewport": "workspace:*",
     "@silker/plugin-edge": "workspace:*",
-    "@silker/plugin-text-editor": "workspace:*"
+    "@silker/plugin-text-editor": "workspace:*",
+    "@silker/plugin-exporter": "workspace:*"
   },
   "devDependencies": {
     "typescript": "~6.0.2"
