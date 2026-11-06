@@ -403,7 +403,7 @@ export class FlowChart {
         const shape = this.editing;
         if (!shape) return;
         shape.layout();
-        this.app.render();
+        this.app.requestRender();
         this.editor.reposition();
       },
       // 编辑结束（失焦）：文字居中落定并通知外部
@@ -477,7 +477,7 @@ export class FlowChart {
       text: input.text,
     });
     this.registerShape(shape);
-    this.app.render();
+    this.app.requestRender();
     this.onChange?.("add");
     return shape.id as string;
   }
@@ -488,7 +488,7 @@ export class FlowChart {
       const list = [...this.multi];
       this.multi = [];
       list.forEach((s) => this.removeShape(s));
-      this.app.render();
+      this.app.requestRender();
       this.onChange?.("delete");
       return;
     }
@@ -501,7 +501,7 @@ export class FlowChart {
     } else {
       this.removeShape(sel);
     }
-    this.app.render();
+    this.app.requestRender();
     this.onChange?.("delete");
   }
 
@@ -552,7 +552,7 @@ export class FlowChart {
       if (from && to)
         this.addEdgeBetween(from, to, false, { from: e.fromDir, to: e.toDir });
     }
-    this.app.render();
+    this.app.requestRender();
   }
 
   private registerShape(shape: Shape) {
@@ -622,7 +622,7 @@ export class FlowChart {
       // 激活的连线提到连线层最上再渲染，避免激活样式被其他连线覆盖
       if (sel instanceof FlowEdge) this.raiseEdgeTop(sel);
     }
-    this.app.render();
+    this.app.requestRender();
   }
 
   // 多选组合的包围盒（少于 2 个形状时视为无组合）
@@ -728,7 +728,7 @@ export class FlowChart {
     if (!shape) return;
     this.editing = null;
     shape.layout();
-    this.app.render();
+    this.app.requestRender();
     this.onChange?.("text");
   }
   //#endregion
@@ -915,7 +915,7 @@ export class FlowChart {
           preview,
           start: p,
         };
-        this.app.render();
+        this.app.requestRender();
         return;
       }
       const side = this.edgeHit(sel, p, scale);
@@ -946,7 +946,7 @@ export class FlowChart {
         edge.dragDir = this.previewToDir(fixedDir, fixedPort, p);
         this.session = { kind: "edge-move", edge, which };
         this.options.canvas.style.cursor = "crosshair";
-        this.app.render();
+        this.app.requestRender();
         return;
       }
     }
@@ -1005,7 +1005,7 @@ export class FlowChart {
     const hitLine = this.hitEdge(p, scale);
     if (hitLine) {
       this.select(hitLine);
-      this.app.render();
+      this.app.requestRender();
       return;
     }
     // 选中形状（单/多选通用）：选框并集内任意位置按下即整体移动（无需按在
@@ -1076,7 +1076,7 @@ export class FlowChart {
       const hp = this.selShape ? this.portHit(this.selShape, p, scale) : null;
       if (hp !== this.hoverPort) {
         this.hoverPort = hp;
-        this.app.render();
+        this.app.requestRender();
       }
       // 悬浮连线跟踪：只有鼠标不压在任何形状或覆盖层手柄/端口上才考虑 edge 悬浮
       //（形状层在上、edge 层在下，被形状遮住的 edge 不该响应；覆盖层手柄不参与
@@ -1097,7 +1097,7 @@ export class FlowChart {
           he.hovered = true;
           this.raiseEdgeTop(he);
         }
-        this.app.render();
+        this.app.requestRender();
       }
       // 连线、节点、空白区域统一 default 光标，悬浮反馈由视觉（浅蓝色）而非光标表达
       this.options.canvas.style.cursor = cursor ?? "";
@@ -1145,13 +1145,13 @@ export class FlowChart {
         s.shape.y = s.origin.y + (p.y - s.start.y);
         this.applySnap(s.shape);
       }
-      this.app.render();
+      this.app.requestRender();
     } else if (s.kind === "resize") {
       this.applyResize(s, p.x - s.start.x, p.y - s.start.y);
-      this.app.render();
+      this.app.requestRender();
     } else if (s.kind === "group-resize") {
       this.applyGroupResize(s, p.x - s.start.x, p.y - s.start.y);
-      this.app.render();
+      this.app.requestRender();
     } else if (s.kind === "blank") {
       // 框选矩形：拖动超过 3 屏幕像素才显示，避免与单击取消选中混淆
       const k = 3 / this.app.renderer.viewport.scale;
@@ -1166,7 +1166,7 @@ export class FlowChart {
               height: h,
             }
           : null;
-      this.app.render();
+      this.app.requestRender();
     } else if (s.kind === "link") {
       const scale = this.app.renderer.viewport.scale;
       // 位移超过点击阈值才确认是拖拽连线：此时才插入预览边并取消选中
@@ -1193,7 +1193,7 @@ export class FlowChart {
         s.preview.to = p;
         s.preview.toDir = this.previewToDir(s.sourceDir, s.preview.from, p);
       }
-      this.app.render();
+      this.app.requestRender();
     } else if (s.kind === "edge-move") {
       // 原连线被拖端跟随光标：吸附时落在目标手柄上，自由拖拽时按出口方向
       // 与光标位置确定虚拟进入方向。任意节点均可吸附（含本连线两端节点，
@@ -1211,7 +1211,7 @@ export class FlowChart {
         s.edge.dragPoint = p;
         s.edge.dragDir = this.previewToDir(fixedDir, fixedPort, p);
       }
-      this.app.render();
+      this.app.requestRender();
     }
   }
 
@@ -1365,7 +1365,7 @@ export class FlowChart {
     if (s.kind === "move") {
       this.guides = null;
       this.snapPrev = { x: false, y: false };
-      this.app.render(); // 清除参考线后立即重绘，否则画面残留拖拽时最后一帧
+      this.app.requestRender(); // 清除参考线后立即重绘，否则画面残留拖拽时最后一帧
       if (s.moved) this.onChange?.("move");
       else if (s.press && Math.hypot(e.clientX - s.press.x, e.clientY - s.press.y) <= CLICK_MOVE_TOLERANCE)
         // 未拖动的点击落在已选中节点上：进入编辑（光标聚焦到点击处）
@@ -1403,13 +1403,13 @@ export class FlowChart {
           this.select(hits[0]);
         } else if (hits.length > 1) {
           this.multi = hits;
-          this.app.render();
+          this.app.requestRender();
         } else {
           this.select(null); // 落空清除选中；select 有无变化守卫可能跳过重绘
-          this.app.render(); // 故显式渲染，覆盖残留的框选画面
+          this.app.requestRender(); // 故显式渲染，覆盖残留的框选画面
         }
       } else {
-        this.app.render();
+        this.app.requestRender();
       }
     } else if (s.kind === "edge-move") {
       // 端点重接结束：退出拖拽态；吸附目标按其端口重接（任意节点，含本连线
@@ -1426,7 +1426,7 @@ export class FlowChart {
         s.edge.reattachEnd(s.which, hit, target && snap ? snap : undefined);
         this.onChange?.("reconnect");
       }
-      this.app.render();
+      this.app.requestRender();
     } else {
       // 连线交互结束：移除预览。（源形状在按下时已取消激活）
       // 纯点击端口（位移在阈值内）：沿端口方向自动新建节点并连线；
@@ -1449,7 +1449,7 @@ export class FlowChart {
         const hit = this.hitShape(p);
         if (hit && hit !== s.source) this.addEdgeBetween(s.source, hit, true);
       }
-      this.app.render();
+      this.app.requestRender();
     }
   }
 
@@ -1507,7 +1507,7 @@ export class FlowChart {
       s.x += dx;
       s.y += dy;
     }
-    this.app.render();
+    this.app.requestRender();
     this.onChange?.("move");
   }
   //#endregion
