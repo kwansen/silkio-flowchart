@@ -4,6 +4,9 @@ import { TextEditor } from "@silker/plugin-text-editor";
 import type { TextEditorCapability } from "@silker/plugin-text-editor";
 import { Exporter, EXPORT_CAPABILITY } from "@silker/plugin-exporter";
 import type { ExportOptions } from "@silker/plugin-exporter";
+import { History, HISTORY_CAPABILITY } from "@silker/plugin-history";
+import type { HistoryCapability, HistoryCommand } from "@silker/plugin-history";
+import { compose } from "@silker/plugin-history";
 import { Selection, selectionCapabilityKey } from "@silker/plugin-selection";
 import type { SelectionCapability } from "@silker/plugin-selection";
 import { createShape } from "./shapes";
@@ -395,11 +398,24 @@ export class FlowChart {
   // 光标在阈值边界抖动时吸附不反复进出
   private snapPrev = { x: false, y: false };
   private onChange?: (type: FlowChangeType) => void;
+  // 命令模式历史记录：实现在 @silker/plugin-history，构造器内安装插件后按能力键消费；
+  // 各变更入口把"改模型"抽成可逆命令入栈，undo/redo 时重放/逆放
+  private history!: HistoryCapability;
+  // 编辑会话起点快照（形状引用与原文字符串，非整图快照）：startEdit 记录，
+  // finishEdit 对比决定是否把文本变更记入历史
+  private editingOld: { shape: Shape | null; text: string } = {
+    shape: null,
+    text: "",
+  };
   private cleanups: Array<() => void> = [];
 
   constructor(private options: FlowChartOptions) {
     this.onChange = options.onChange;
     this.app = new App(options.canvas);
+    // 安装历史记录插件：命令模式 undo/redo 双栈（默认容量 100），install 时自注册
+    // 历史能力，各变更入口按能力键消费（只认能力名与契约，不认插件实例）
+    this.app.use(new History());
+    this.history = this.app.require(HISTORY_CAPABILITY);
     this.app.use(new Viewport());
     // 安装导出插件：install 时自注册导出能力，toImage 按能力键消费
     this.app.use(new Exporter());
@@ -493,32 +509,75 @@ export class FlowChart {
       height: input.height,
       text: input.text,
     });
-    this.registerShape(shape);
+    // 注册动作本身作为可逆命令：redo 完成注册，undo 摘除节点及其关联连线
+    this.history.exec({
+      type: "add",
+      redo: () => this.registerShape(shape),
+      undo: () => this.removeShape(shape),
+    });
     this.app.requestRender();
     this.onChange?.("add");
     return shape.id as string;
   }
 
-  // 删除当前选中（形状连同其关联连线，或单条连线；多选时删除全部成员）
+  // 删除当前选中（形状连同其关联连线，或单条连线；多选时删除全部成员）。
+  // 删除记录为可逆命令：undo 按原 z 序索引插回，redo 重放摘除
   deleteSelected() {
     if (this.sel.items.length > 1) {
       const list = [...this.selShapes];
+      const captured = list.map((s) => this.captureShapeRemoval(s));
       this.sel.clear();
       list.forEach((s) => this.removeShape(s));
       this.app.requestRender();
+      this.history.exec({
+        type: "delete",
+        redo: () => {
+          for (const c of captured) this.applyShapeRemoval(c);
+        },
+        undo: () => {
+          for (const c of [...captured].reverse()) this.restoreShapeRemoval(c);
+        },
+      });
       this.onChange?.("delete");
       return;
     }
     const sel = this.sel.items[0];
     if (!sel) return;
     if (sel instanceof FlowEdge) {
+      const captured = {
+        edge: sel,
+        childIdx: this.app.children.indexOf(sel),
+        listIdx: this.edges.indexOf(sel),
+      };
       this.select(null);
       this.removeTop(sel);
       this.edges = this.edges.filter((e) => e !== sel);
+      this.app.requestRender();
+      this.history.exec({
+        type: "delete",
+        redo: () => {
+          this.removeTop(captured.edge);
+          this.edges = this.edges.filter((e) => e !== captured.edge);
+        },
+        undo: () => {
+          this.edges.splice(
+            Math.min(captured.listIdx, this.edges.length),
+            0,
+            captured.edge,
+          );
+          this.insertAt(captured.edge, captured.childIdx);
+        },
+      });
     } else {
+      const captured = this.captureShapeRemoval(sel);
       this.removeShape(sel);
+      this.app.requestRender();
+      this.history.exec({
+        type: "delete",
+        redo: () => this.applyShapeRemoval(captured),
+        undo: () => this.restoreShapeRemoval(captured),
+      });
     }
-    this.app.requestRender();
     this.onChange?.("delete");
   }
 
@@ -528,10 +587,6 @@ export class FlowChart {
   replaceSelected(kind: ShapeKind) {
     const old = this.selShape;
     if (!old || old.kind === kind) return;
-    if (this.editing === old) {
-      this.editing = null;
-      this.editor.stop();
-    }
     const shape = createShape(kind, {
       id: old.id as string,
       x: old.x,
@@ -540,24 +595,39 @@ export class FlowChart {
       height: old.height,
       text: old.text.text,
     });
-    for (const e of this.edges) {
-      if (e.fromNode === old) e.fromNode = shape;
-      if (e.toNode === old) e.toNode = shape;
-    }
-    const idx = this.app.children.indexOf(old);
-    this.removeTop(old);
-    this.shapes.delete(old.id as string);
-    if (idx !== -1) {
-      shape.parent = null;
-      this.app.children.splice(idx, 0, shape);
-    } else {
-      this.app.add(shape);
-    }
-    this.shapes.set(shape.id as string, shape);
-    this.raiseOverlay();
-    this.select(shape);
+    // 替换记录为可逆命令：undo/redo 对称地把旧/新形状顶替回去
+    this.history.exec({
+      type: "replace",
+      redo: () => this.swapShape(old, shape),
+      undo: () => this.swapShape(shape, old),
+    });
     this.app.requestRender();
     this.onChange?.("replace");
+  }
+
+  // 把 b 顶替 a：重绑全部连线两端引用、占据 a 的 z 序位置并更新形状表；
+  // b 为替身形状（预先创建），replaceSelected 的 undo/redo 共用
+  private swapShape(a: Shape, b: Shape) {
+    if (this.editing === a) {
+      this.editing = null;
+      this.editor.stop();
+    }
+    for (const e of this.edges) {
+      if (e.fromNode === a) e.fromNode = b;
+      if (e.toNode === a) e.toNode = b;
+    }
+    const idx = this.app.children.indexOf(a);
+    this.removeTop(a);
+    this.shapes.delete(a.id as string);
+    if (idx !== -1) {
+      b.parent = null;
+      this.app.children.splice(idx, 0, b);
+    } else {
+      this.app.add(b);
+    }
+    this.shapes.set(b.id as string, b);
+    this.raiseOverlay();
+    this.select(b);
   }
 
   // 导出当前数据（位置为最新拖拽结果）
@@ -588,6 +658,36 @@ export class FlowChart {
       [...this.shapes.values(), ...this.edges],
       options,
     );
+  }
+
+  // 撤销：编辑与拖拽会话中不响应（避免与进行中的变更互踩）；回退前先清空选中，
+  // 防止悬空引用（选中框/端口/编辑态指向已摘除的形状或连线）
+  undo() {
+    if (this.editing || this.session) return;
+    const cmd = this.history.undo();
+    if (!cmd) return;
+    this.select(null);
+    this.app.requestRender();
+    // undo/redo 不产生新变更，仅通知宿主数据已回退（type 为产生该变更的命令类型）
+    this.onChange?.(cmd.type as FlowChangeType);
+  }
+
+  // 重做：流程与 undo 对称，方向相反
+  redo() {
+    if (this.editing || this.session) return;
+    const cmd = this.history.redo();
+    if (!cmd) return;
+    this.select(null);
+    this.app.requestRender();
+    this.onChange?.(cmd.type as FlowChangeType);
+  }
+
+  get canUndo(): boolean {
+    return this.history.canUndo;
+  }
+
+  get canRedo(): boolean {
+    return this.history.canRedo;
   }
 
   // 卸载事件监听（页面级销毁用）
@@ -637,19 +737,47 @@ export class FlowChart {
 
   // 新建连线：两节点间可存在多条连线，不做去重限制；
   // 插入到形状层之下保证连线画在节点下方；
-  // hints 指定两端固定端口（拖拽吸附创建时传入），缺省按主导方向自动选边
+  // hints 指定两端固定端口（拖拽吸附创建时传入），缺省按主导方向自动选边。
+  // notify 时创建记录为可逆命令（变更已发生，record 仅入栈）
   private addEdgeBetween(
     from: Shape,
     to: Shape,
     notify: boolean,
     hints?: FlowEdgeHints,
-  ) {
+  ): FlowEdge {
     const edge = new FlowEdge(from, to, hints);
     this.edges.push(edge);
+    this.insertEdge(edge);
+    if (notify) {
+      this.history.record({
+        type: "connect",
+        ...this.edgeAddRemove(edge),
+      });
+      this.onChange?.("connect");
+    }
+    return edge;
+  }
+
+  // 连线增删的可逆对：redo 压回连线表并插入形状层之下，undo 摘除。
+  // 供 connect 命令直接入栈，也供组合命令复用
+  private edgeAddRemove(edge: FlowEdge): HistoryCommand {
+    return {
+      redo: () => {
+        this.edges.push(edge);
+        this.insertEdge(edge);
+      },
+      undo: () => {
+        this.edges = this.edges.filter((e) => e !== edge);
+        this.removeTop(edge);
+      },
+    };
+  }
+
+  // 连线插入到形状层之下（首个 Shape 之前），保证画在节点下方
+  private insertEdge(edge: FlowEdge) {
     const idx = this.app.children.findIndex((n) => n instanceof Shape);
     if (idx === -1) this.app.children.push(edge);
     else this.app.children.splice(idx, 0, edge);
-    if (notify) this.onChange?.("connect");
   }
 
   private removeShape(shape: Shape) {
@@ -670,6 +798,51 @@ export class FlowChart {
   private removeTop(node: Node) {
     const i = this.app.children.indexOf(node);
     if (i !== -1) this.app.children.splice(i, 1);
+  }
+
+  // 按 z 序索引插回画布（undo/redo 重放同一索引，不依赖恢复时的树状态）
+  private insertAt(node: Node, idx: number) {
+    node.parent = null;
+    this.app.children.splice(
+      Math.max(0, Math.min(idx, this.app.children.length)),
+      0,
+      node,
+    );
+  }
+
+  // 删除捕获：形状 + 原 z 序索引 + 关联连线（各自的连线序与 z 序索引）。
+  // 撤销删除时按索引插回，恢复原 z 序（连线层在形状层之下）
+  private captureShapeRemoval(shape: Shape) {
+    return {
+      shape,
+      childIdx: this.app.children.indexOf(shape),
+      edges: this.edges
+        .map((edge, order) => ({
+          edge,
+          order,
+          childIdx: this.app.children.indexOf(edge),
+        }))
+        .filter((c) => c.edge.fromNode === shape || c.edge.toNode === shape),
+    };
+  }
+
+  // 应用删除：先摘关联连线再摘形状（removeShape 内含编辑态清理与取消选中）
+  private applyShapeRemoval(c: ReturnType<FlowChart["captureShapeRemoval"]>) {
+    for (const { edge } of c.edges) {
+      this.edges = this.edges.filter((e) => e !== edge);
+      this.removeTop(edge);
+    }
+    this.removeShape(c.shape);
+  }
+
+  // 恢复删除：按记录的连线序与 z 序索引插回连线与形状
+  private restoreShapeRemoval(c: ReturnType<FlowChart["captureShapeRemoval"]>) {
+    for (const { edge, order, childIdx } of c.edges) {
+      this.edges.splice(Math.min(order, this.edges.length), 0, edge);
+      this.insertAt(edge, childIdx);
+    }
+    this.insertAt(c.shape, c.childIdx);
+    this.shapes.set(c.shape.id as string, c.shape);
   }
 
   private select(sel: Shape | FlowEdge | null) {
@@ -792,6 +965,9 @@ export class FlowChart {
   //#region 编辑
   // 进入编辑：point 为按下时屏幕坐标，编辑器经浏览器命中测试把光标折叠到点击处
   private startEdit(shape: Shape, point?: { x: number; y: number }) {
+    // 编辑会话起点：定格形状与原文，编辑结束对比决定是否把文本变更记入历史
+    // （覆盖层编辑是持续同步输入，无法在单次 input 边界判定"一次变更"）
+    this.editingOld = { shape, text: shape.text.text };
     // 先 start：其内部 stop() 会触发旧会话的 onEditEnd → finishEdit，
     // 此时 this.editing 仍是旧形状（或 null），不会被新会话误清
     this.editor.start(shape.text);
@@ -804,6 +980,23 @@ export class FlowChart {
     if (!shape) return;
     this.editing = null;
     shape.layout();
+    // 文本相对会话起点确有变化才记历史：record 仅入栈不执行，因变更已发生
+    const old = this.editingOld;
+    if (old.shape === shape && shape.text.text !== old.text) {
+      const before = old.text;
+      const after = shape.text.text;
+      this.history.record({
+        type: "text",
+        redo: () => {
+          shape.text.text = after;
+          shape.layout();
+        },
+        undo: () => {
+          shape.text.text = before;
+          shape.layout();
+        },
+      });
+    }
     this.app.requestRender();
     this.onChange?.("text");
   }
@@ -1433,8 +1626,37 @@ export class FlowChart {
       this.guides = null;
       this.snapPrev = { x: false, y: false };
       this.app.requestRender(); // 清除参考线后立即重绘，否则画面残留拖拽时最后一帧
-      if (s.moved) this.onChange?.("move");
-      else if (s.press && Math.hypot(e.clientX - s.press.x, e.clientY - s.press.y) <= CLICK_MOVE_TOLERANCE)
+      if (s.moved) {
+        // 拖拽移动记录为可逆命令（变更已发生）：主节点与组内成员合并为一条，
+        // undo 一次全回退；位置全部未变（吸附归位）时不记录
+        const before = [
+          { shape: s.shape, x: s.origin.x, y: s.origin.y },
+          ...(s.group ?? []).map((g) => ({ shape: g.shape, x: g.x, y: g.y })),
+        ];
+        const after = before.map((m) => ({
+          shape: m.shape,
+          x: m.shape.x,
+          y: m.shape.y,
+        }));
+        if (before.some((m) => m.shape.x !== m.x || m.shape.y !== m.y)) {
+          this.history.record({
+            type: "move",
+            redo: () => {
+              for (const m of after) {
+                m.shape.x = m.x;
+                m.shape.y = m.y;
+              }
+            },
+            undo: () => {
+              for (const m of before) {
+                m.shape.x = m.x;
+                m.shape.y = m.y;
+              }
+            },
+          });
+        }
+        this.onChange?.("move");
+      } else if (s.press && Math.hypot(e.clientX - s.press.x, e.clientY - s.press.y) <= CLICK_MOVE_TOLERANCE)
         // 未拖动的点击落在已选中节点上：进入编辑（光标聚焦到点击处）
         this.startEdit(s.shape, s.press);
       else if (s.group && !s.keepMulti) this.select(s.shape); // 组内单击未拖动：塌缩为单选该形状
@@ -1446,10 +1668,29 @@ export class FlowChart {
         s.shape.width !== o.width ||
         s.shape.height !== o.height
       ) {
+        // 缩放记录为可逆命令（变更已发生）：before/after 各定格一份 bounds
+        const before = { x: o.x, y: o.y, width: o.width, height: o.height };
+        const after = {
+          x: s.shape.x,
+          y: s.shape.y,
+          width: s.shape.width,
+          height: s.shape.height,
+        };
+        this.history.record({
+          type: "resize",
+          redo: () => {
+            Object.assign(s.shape, after);
+            s.shape.layout();
+          },
+          undo: () => {
+            Object.assign(s.shape, before);
+            s.shape.layout();
+          },
+        });
         this.onChange?.("resize");
       }
     } else if (s.kind === "group-resize") {
-      // 有成员相对初始状态发生变化时通知
+      // 有成员相对初始状态发生变化时通知，并记录为可逆命令（变更已发生）
       if (
         s.origins.some(
           (g) =>
@@ -1459,6 +1700,45 @@ export class FlowChart {
             g.shape.height !== g.height,
         )
       ) {
+        const before = s.origins.map((g) => ({
+          shape: g.shape,
+          x: g.x,
+          y: g.y,
+          width: g.width,
+          height: g.height,
+        }));
+        const after = s.origins.map((g) => ({
+          shape: g.shape,
+          x: g.shape.x,
+          y: g.shape.y,
+          width: g.shape.width,
+          height: g.shape.height,
+        }));
+        this.history.record({
+          type: "resize",
+          redo: () => {
+            for (const m of after) {
+              Object.assign(m.shape, {
+                x: m.x,
+                y: m.y,
+                width: m.width,
+                height: m.height,
+              });
+              m.shape.layout();
+            }
+          },
+          undo: () => {
+            for (const m of before) {
+              Object.assign(m.shape, {
+                x: m.x,
+                y: m.y,
+                width: m.width,
+                height: m.height,
+              });
+              m.shape.layout();
+            }
+          },
+        });
         this.onChange?.("resize");
       }
     } else if (s.kind === "edge-move") {
@@ -1473,7 +1753,17 @@ export class FlowChart {
       const hit = target ?? this.hitShape(this.toWorld(e));
       const cur = s.which === "from" ? s.edge.fromNode : s.edge.toNode;
       if (hit && !(hit === cur && !target)) {
+        // 重接前定格原端（节点 + 端口方向），undo/redo 对称重接
+        const oldNode = cur;
+        const oldDir = s.which === "from" ? s.edge.fromDir : s.edge.toDir;
         s.edge.reattachEnd(s.which, hit, target && snap ? snap : undefined);
+        const newNode = s.which === "from" ? s.edge.fromNode : s.edge.toNode;
+        const newDir = s.which === "from" ? s.edge.fromDir : s.edge.toDir;
+        this.history.record({
+          type: "reconnect",
+          redo: () => s.edge.reattachEnd(s.which, newNode, newDir),
+          undo: () => s.edge.reattachEnd(s.which, oldNode, oldDir),
+        });
         this.onChange?.("reconnect");
       }
       this.app.requestRender();
@@ -1524,11 +1814,23 @@ export class FlowChart {
       shape.x = source.x + (source.width - shape.width) / 2;
       shape.y = source.y - CLICK_CREATE_GAP - shape.height;
     }
-    this.registerShape(shape);
-    this.addEdgeBetween(source, shape, false, {
-      from: dir,
-      to: OPPOSITE_DIR[dir],
-    });
+    // 节点注册与连线创建组合为一条原子命令（不预先注册，避免 exec 重放时重复入列）：
+    // undo 逆序回退——先摘连线再摘节点，整体回到创建前；redo 顺序重建
+    this.history.exec(
+      compose(
+        "add",
+        {
+          redo: () => this.registerShape(shape),
+          undo: () => this.removeShape(shape),
+        },
+        this.edgeAddRemove(
+          new FlowEdge(source, shape, {
+            from: dir,
+            to: OPPOSITE_DIR[dir],
+          }),
+        ),
+      ),
+    );
     this.select(shape);
     this.onChange?.("add");
   }
@@ -1536,6 +1838,22 @@ export class FlowChart {
   private onKeyDown(e: KeyboardEvent) {
     // 覆盖层持有焦点时按键属于输入，交由编辑器处理
     if (this.editing || this.editor.hasFocus()) return;
+    // Ctrl/Cmd+Z 撤销、Ctrl+Shift+Z / Ctrl+Y 重做（编辑与拖拽会话中不响应，
+    // undo/redo 内部有同款守卫）
+    if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+      const k = e.key.toLowerCase();
+      if (k === "z") {
+        e.preventDefault();
+        if (e.shiftKey) this.redo();
+        else this.undo();
+        return;
+      }
+      if (k === "y") {
+        e.preventDefault();
+        this.redo();
+        return;
+      }
+    }
     // Delete/Backspace：删除选中
     if (e.key === "Delete" || e.key === "Backspace") {
       if (!this.sel.items.length) return;
@@ -1557,10 +1875,27 @@ export class FlowChart {
     const targets = this.selShapes;
     if (!targets.length) return;
     e.preventDefault();
+    // 微移记录为可逆命令（变更已发生）：undo 回到按前位置，redo 重放同向位移
+    const before = targets.map((s) => ({ shape: s, x: s.x, y: s.y }));
     for (const s of targets) {
       s.x += dx;
       s.y += dy;
     }
+    this.history.record({
+      type: "move",
+      redo: () => {
+        for (const s of targets) {
+          s.x += dx;
+          s.y += dy;
+        }
+      },
+      undo: () => {
+        for (const m of before) {
+          m.shape.x = m.x;
+          m.shape.y = m.y;
+        }
+      },
+    });
     this.app.requestRender();
     this.onChange?.("move");
   }

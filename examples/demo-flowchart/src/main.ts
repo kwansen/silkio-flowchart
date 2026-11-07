@@ -30,8 +30,20 @@ const flowchart = new FlowChart({
   // 数据变化（新增/删除/移动/连线/编辑）时打印当前数据 JSON
   onChange: (type) => {
     console.log(`[FlowChart] ${type}`, JSON.stringify(flowchart.toJSON()));
+    refreshToolbar();
   },
 });
+
+// 撤销/重做工具条：点击触发对应操作，按历史栈可用性禁用按钮（含 undo/redo 后刷新）
+const undoBtn = document.getElementById("undo-btn") as HTMLButtonElement;
+const redoBtn = document.getElementById("redo-btn") as HTMLButtonElement;
+const refreshToolbar = () => {
+  undoBtn.disabled = !flowchart.canUndo;
+  redoBtn.disabled = !flowchart.canRedo;
+};
+undoBtn.addEventListener("click", () => flowchart.undo());
+redoBtn.addEventListener("click", () => flowchart.redo());
+refreshToolbar();
 
 // 工具栏：新增节点落在视口中心附近（逐个略微错开避免完全重叠）
 let addCount = 0;
