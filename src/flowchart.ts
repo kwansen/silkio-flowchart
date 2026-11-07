@@ -3,13 +3,8 @@ import type { ExportOptions, HistoryCapability, Plugin } from "@silker/core";
 import type { SelectionCapability, TextEditorCapability } from "@silker/core";
 import { selectionCapabilityKey, HISTORY_CAPABILITY } from "@silker/core";
 import { EXPORT_CAPABILITY, COMMAND_CAPABILITY, CANVAS_CLICK_CAPABILITY } from "@silker/core";
-import { Viewport } from "@silker/plugin-viewport";
-import { TextEditor } from "@silker/plugin-text-editor";
-import { Exporter } from "@silker/plugin-exporter";
-import { History } from "@silker/plugin-history";
-import { Selection } from "@silker/plugin-selection";
-import { Command } from "@silker/plugin-command";
-import { Pointer, Clicker } from "@silker/plugin-interaction";
+import { officialPlugins } from "@silker/preset";
+import type { TextEditor } from "@silker/plugin-text-editor";
 import { BuiltinShapes, SHAPE_REGISTRY_CAPABILITY } from "./shape-registry";
 import type { ShapeRegistryCapability } from "./shape-registry";
 import { FlowEdge } from "./FlowEdge";
@@ -54,7 +49,9 @@ export interface FlowChartOptions {
 //（按点击位置聚焦光标）、端口拖拽连线、Delete 删除。
 // 依赖单向：门面 → interactions/editing/hover → model → Shape/FlowEdge/core
 export class FlowChart {
-  app: App;
+  // 装配与渲染属主：私有——外部经门面语义 API（screenToWorld/fit/toImage…）消费，
+  // 装配期定制经 FlowChartOptions.app 传入，避免外部深入内部状态（如 camera.viewport）
+  private app: App;
   private editor: TextEditorCapability;
   // 模型：形状表与连线表的唯一属主（建载/增删/顶替/z 序维护）
   private model!: FlowModel;
@@ -86,25 +83,14 @@ export class FlowChart {
   constructor(private options: FlowChartOptions) {
     this.onChange = options.onChange;
     if (options.app) {
-      // 显式装配模式：宿主自建 App 并装配官方外部插件（视口/指针/导出/历史/
-      // 命令/编辑器/选中），本场景按能力键复用这些能力，只补齐自有插件
+      // 显式装配模式：宿主自建 App 并装配官方外部插件（通常用 @silker/preset 的
+      // officialPlugins()），本场景按能力键复用这些能力，只补齐自有插件
       this.app = options.app;
     } else {
-      // 便捷模式：自建 App 并装配官方外部插件（开箱即用，与显式装配同一套）
+      // 便捷模式：自建 App 并安装官方外部插件预设（开箱即用，与显式装配同一套，
+      // 集合与顺序的单一事实来源在 @silker/preset）
       this.app = new App(options.canvas);
-      // 安装历史记录插件：命令模式 undo/redo 双栈（默认容量 100），install 时自注册
-      // 历史能力，各变更入口按能力键消费（只认能力名与契约，不认插件实例）
-      this.app.use(new History());
-      // 安装命令与键位插件：install 时自注册命令能力，此后仅按能力键消费
-      this.app.use(new Command());
-      // 安装视口插件：视口状态唯一属主为 App 的 Camera
-      this.app.use(new Viewport());
-      // 安装指针交互插件：统一事件绑定/撤销与坐标换算（机制层），交互策略由本场景声明
-      this.app.use(new Pointer());
-      // 安装点击分发插件：拖拽阈值判定、命中测试与节点/空白点击分发（机制层）
-      this.app.use(new Clicker());
-      // 安装导出插件：install 时自注册导出能力，toImage 按能力键消费
-      this.app.use(new Exporter());
+      for (const p of officialPlugins()) this.app.use(p);
     }
     this.history = this.app.require(HISTORY_CAPABILITY);
     // 安装官方形状/吸附/边路由插件（自注册各自能力），再装配应用层传入的第三方
@@ -213,16 +199,9 @@ export class FlowChart {
     this.cleanups.push(this.interactions.bind(options.canvas));
   }
 
-  // 装配文本编辑器：显式模式按能力键取回宿主装配的实例，便捷模式自建并安装；
-  // 业务回调统一写到实例的公开回调字段上（两种模式共用同一套回调）
+  // 装配文本编辑器：按能力键取回官方预设（或宿主显式装配）的实例并接线场景回调
   private setupEditor(): TextEditorCapability {
-    let editor: TextEditor;
-    if (this.options.app) {
-      editor = this.app.require(TEXT_EDITOR_CAPABILITY) as TextEditor;
-    } else {
-      editor = new TextEditor();
-      this.app.use(editor);
-    }
+    const editor = this.app.require(TEXT_EDITOR_CAPABILITY) as TextEditor;
     // 输入实时同步：文本重测后重新居中（不改形状尺寸），覆盖层跟随新位置
     editor.onInput = () => {
       const shape = this.editing.editing;
@@ -237,18 +216,10 @@ export class FlowChart {
   }
 
   // 装配选中插件：单选/多选模型与框选会话（机制），选中语义（selected 高亮、
-  // 连线置顶等）由本场景定义；显式模式按能力键取回宿主装配的实例，
-  // 便捷模式自建并安装。框选命中规则 = 与矩形相交的形状
+  // 连线置顶等）由本场景定义。按能力键取回官方预设（或宿主显式装配）的实例。
+  // 框选命中规则 = 与矩形相交的形状
   private setupSelection(): SelectionCapability<Shape | FlowEdge> {
-    let selection: Selection<Shape | FlowEdge>;
-    if (this.options.app) {
-      selection = this.app.require(
-        selectionCapabilityKey<Shape | FlowEdge>(),
-      ) as Selection<Shape | FlowEdge>;
-    } else {
-      selection = new Selection<Shape | FlowEdge>();
-      this.app.use(selection);
-    }
+    const selection = this.app.require(selectionCapabilityKey<Shape | FlowEdge>());
     selection.hitRect = (rect) => marqueeHits(this.model.shapes.values(), rect);
     // 拖框中实时显示已框中节点的整体选框（随拖拽更新，未框中节点时不显示）
     selection.onMarqueeMove = (_rect, hits) => {
@@ -385,6 +356,23 @@ export class FlowChart {
   // 导出当前数据（位置为最新拖拽结果）
   toJSON(): FlowData {
     return this.model.toJSON();
+  }
+
+  // 屏幕坐标 → 世界坐标：clientX/Y 为浏览器事件坐标口径（与指针事件一致，
+  // 画布页面偏移由相机自行扣除）；新增节点落在视口某屏幕位置等场景使用
+  screenToWorld(clientX: number, clientY: number) {
+    return this.app.camera.toWorld(clientX, clientY);
+  }
+
+  // 适应视图：按全部形状包围盒拟合视口（视口能力的语义化入口，不暴露内部状态）
+  fit() {
+    const shapes = [...this.model.shapes.values()];
+    if (!shapes.length) return;
+    const b = unionBounds(shapes);
+    this.app
+      .require(VIEWPORT_CAPABILITY)
+      .fit({ minX: b.x, minY: b.y, maxX: b.x + b.width, maxY: b.y + b.height });
+    this.app.requestRender();
   }
 
   // 导出全部形状与连线为图片（返回 Blob）：委托导出能力离屏渲染，与当前视口无关；

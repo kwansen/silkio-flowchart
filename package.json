@@ -15,13 +15,8 @@
   },
   "dependencies": {
     "@silker/core": "workspace:*",
-    "@silker/plugin-viewport": "workspace:*",
-    "@silker/plugin-text-editor": "workspace:*",
-    "@silker/plugin-exporter": "workspace:*",
-    "@silker/plugin-selection": "workspace:*",
-    "@silker/plugin-history": "workspace:*",
-    "@silker/plugin-command": "workspace:*",
-    "@silker/plugin-interaction": "workspace:*"
+    "@silker/preset": "workspace:*",
+    "@silker/plugin-text-editor": "workspace:*"
   },
   "devDependencies": {
     "typescript": "~6.0.2"

@@ -1,17 +1,11 @@
 // 入口：挂载 canvas 并渲染一张示例流程图
-// 显式装配示例：宿主自建 App 并按需安装官方外部插件（与 FlowChart 便捷模式
-// 装配的集合一致），再交给 FlowChart 复用——应用层可自由增减/替换插件
+// 显式装配示例：宿主自建 App 并安装官方插件预设（@silker/preset 的 officialPlugins，
+// 与 FlowChart 便捷模式装配的集合同源），再交给 FlowChart 复用——应用层可自由增减/替换插件
 import { App } from "@silker/core";
-import { History } from "@silker/plugin-history";
-import { Command } from "@silker/plugin-command";
-import { Viewport, VIEWPORT_CAPABILITY } from "@silker/plugin-viewport";
-import { Clicker, Pointer } from "@silker/plugin-interaction";
-import { Exporter } from "@silker/plugin-exporter";
-import { TextEditor } from "@silker/plugin-text-editor";
-import { Selection } from "@silker/plugin-selection";
+import { officialPlugins } from "@silker/preset";
 import { FlowChart, Shape, SHAPE_REGISTRY_CAPABILITY } from "@silker/flowchart";
 import type { Plugin, ShapeOptions, ShapeStyle } from "@silker/flowchart";
-import type { FlowData, ShapeKind, FlowEdge } from "@silker/flowchart";
+import type { FlowData, ShapeKind } from "@silker/flowchart";
 
 // ── 第三方形状扩展示例：便签（折角矩形，经形状注册表插件注册）──
 // 只依赖 flowchart 导出的 Shape 基类与能力键，不依赖 FlowChart 内部实现
@@ -81,17 +75,10 @@ const data: FlowData = {
 
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 
-// 显式装配：自建 App 并安装官方外部插件（顺序与便捷模式一致），
-// FlowChart 按 ability 键复用这些能力，只补齐自有的形状/吸附/边路由插件
+// 显式装配：自建 App 并安装官方插件预设（集合与顺序的单一事实来源在 @silker/preset），
+// FlowChart 按能力键复用这些能力，只补齐自有的形状/吸附/边路由插件
 const app = new App(canvas);
-app.use(new History()); // 撤销/重做命令栈
-app.use(new Command()); // 命令注册与默认键位
-app.use(new Viewport()); // 视口（平移/缩放/适应视图）
-app.use(new Pointer()); // 指针事件绑定与坐标换算
-app.use(new Clicker()); // 点击分发（拖拽阈值判定/节点 onClick/空白点击）
-app.use(new Exporter()); // 画布导出
-app.use(new TextEditor()); // 节点文本编辑
-app.use(new Selection<Shape | FlowEdge>()); // 单选/多选/框选模型
+for (const p of officialPlugins()) app.use(p);
 
 const flowchart = new FlowChart({
   canvas,
@@ -121,13 +108,17 @@ refreshToolbar();
 let addCount = 0;
 const addAtCenter = (shape: ShapeKind, text: string) => {
   const rect = canvas.getBoundingClientRect();
-  const { x: vx, y: vy, scale } = flowchart.app.camera.viewport;
+  // 屏幕坐标 → 世界坐标走门面语义 API（浏览器事件坐标口径，画布偏移由相机扣除）
+  const center = flowchart.screenToWorld(
+    rect.left + rect.width / 2,
+    rect.top + rect.height / 2,
+  );
   const offset = (addCount++ % 5) * 24 - 48;
   flowchart.addNode({
     shape,
     text,
-    x: (rect.width / 2 - vx) / scale - 80 + offset,
-    y: (rect.height / 2 - vy) / scale - 32 + offset,
+    x: center.x - 80 + offset,
+    y: center.y - 32 + offset,
   });
 };
 document
@@ -179,18 +170,8 @@ document
   .getElementById("to-note")!
   .addEventListener("click", () => flowchart.replaceSelected("note"));
 
-// 适应视图：按全部节点包围盒拟合视口（Viewport 插件的 fit）
-document.getElementById("fit-btn")!.addEventListener("click", () => {
-  const nodes = flowchart.toJSON().nodes;
-  if (!nodes.length) return;
-  const minX = Math.min(...nodes.map((n) => n.x));
-  const minY = Math.min(...nodes.map((n) => n.y));
-  const maxX = Math.max(...nodes.map((n) => n.x + (n.width ?? 0)));
-  const maxY = Math.max(...nodes.map((n) => n.y + (n.height ?? 0)));
-  // 经能力键消费视口能力（与 FlowChart 内部同一套协议）
-  flowchart.app.require(VIEWPORT_CAPABILITY).fit({ minX, minY, maxX, maxY });
-  flowchart.app.render();
-});
+// 适应视图：按全部形状包围盒拟合视口（门面语义 API，与内部同一套视口协议）
+document.getElementById("fit-btn")!.addEventListener("click", () => flowchart.fit());
 
 // 导出 JSON：控制台打印并触发下载
 document.getElementById("export-btn")!.addEventListener("click", () => {
