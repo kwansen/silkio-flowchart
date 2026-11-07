@@ -3,7 +3,7 @@ import type { ExportOptions, HistoryCapability, Plugin } from "@silker/core";
 import type { SelectionCapability, TextEditorCapability } from "@silker/core";
 import { selectionCapabilityKey, HISTORY_CAPABILITY } from "@silker/core";
 import { EXPORT_CAPABILITY, COMMAND_CAPABILITY, CANVAS_CLICK_CAPABILITY } from "@silker/core";
-import { Viewport } from "@silker/core-viewport";
+import { Viewport } from "@silker/plugin-viewport";
 import { TextEditor } from "@silker/plugin-text-editor";
 import { Exporter } from "@silker/plugin-exporter";
 import { History } from "@silker/plugin-history";

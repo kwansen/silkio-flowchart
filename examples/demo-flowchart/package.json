@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@silker/core": "workspace:*",
-    "@silker/core-viewport": "workspace:*",
+    "@silker/plugin-viewport": "workspace:*",
     "@silker/flowchart": "workspace:*",
     "@silker/plugin-command": "workspace:*",
     "@silker/plugin-exporter": "workspace:*",

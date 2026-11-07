@@ -4,7 +4,7 @@
 import { App } from "@silker/core";
 import { History } from "@silker/plugin-history";
 import { Command } from "@silker/plugin-command";
-import { Viewport, VIEWPORT_CAPABILITY } from "@silker/core-viewport";
+import { Viewport, VIEWPORT_CAPABILITY } from "@silker/plugin-viewport";
 import { Clicker, Pointer } from "@silker/plugin-interaction";
 import { Exporter } from "@silker/plugin-exporter";
 import { TextEditor } from "@silker/plugin-text-editor";
