@@ -24,13 +24,34 @@ function fakeEdge(from: Shape, to: Shape): FlowEdge {
   return e;
 }
 
-// 模型桩：app 仅提供 children（z 序数组），能力钩子为空实现/记录器
+// 模型桩：app 仅提供 children（z 序数组）及对其的 add/remove/insert/reorder 语义
+// （与 core App 一致：索引越界钳制、reorder 先摘后插），能力钩子为空实现/记录器
 function makeModel(
   children: Node[],
   onDetach: (shape: Shape) => void = () => {},
 ): FlowModel {
+  const clamp = (idx: number) => Math.max(0, Math.min(idx, children.length));
   return new FlowModel({
-    app: { children } as unknown as App,
+    app: {
+      children,
+      add: (n: Node) => {
+        children.push(n);
+      },
+      remove: (n: Node) => {
+        const i = children.indexOf(n);
+        if (i !== -1) children.splice(i, 1);
+      },
+      insert: (n: Node, idx: number) => {
+        children.splice(clamp(idx), 0, n);
+      },
+      reorder: (n: Node, idx: number) => {
+        const i = children.indexOf(n);
+        if (i === -1) return;
+        children.splice(i, 1);
+        children.splice(clamp(idx), 0, n);
+      },
+      requestRender: () => {},
+    } as unknown as App,
     registry: {} as FlowModelDeps["registry"],
     router: {} as FlowModelDeps["router"],
     history: {} as FlowModelDeps["history"],

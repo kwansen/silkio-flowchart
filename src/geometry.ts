@@ -30,7 +30,7 @@ export type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
 // 命中形状：hitNode 返回最深层（可能是形状内嵌 Text），沿父链回溯到 Shape
 export function hitShape(
-  children: Node[],
+  children: readonly Node[],
   p: { x: number; y: number },
 ): Shape | null {
   for (let i = children.length - 1; i >= 0; i--) {

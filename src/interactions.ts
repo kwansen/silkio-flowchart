@@ -326,8 +326,7 @@ export class FlowInteractions {
           return;
         s.armed = true;
         const idx = this.deps.app.children.findIndex((n) => n instanceof Shape);
-        if (idx === -1) this.deps.app.children.push(s.preview);
-        else this.deps.app.children.splice(idx, 0, s.preview);
+        this.deps.app.insert(s.preview, idx === -1 ? this.deps.app.children.length : idx);
         this.deps.canvas.style.cursor = "crosshair";
         this.select(null);
       }

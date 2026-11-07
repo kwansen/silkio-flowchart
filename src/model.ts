@@ -30,7 +30,7 @@ export interface FlowModelDeps {
 // 形状 + 原 z 序索引 + 关联连线（各自的连线序与 z 序索引）。
 // 撤销删除时按索引插回，恢复原 z 序（连线层在形状层之下）
 export function captureRemoval(
-  children: Node[],
+  children: readonly Node[],
   edges: FlowEdge[],
   shape: Shape,
 ) {
@@ -98,12 +98,7 @@ export class FlowModel {
 
   // 保持选中框覆盖层在最上层（新增节点会追加到 children 末尾）
   raiseOverlay() {
-    const c = this.deps.app.children;
-    const i = c.indexOf(this.overlay);
-    if (i !== -1 && i !== c.length - 1) {
-      c.splice(i, 1);
-      c.push(this.overlay);
-    }
+    this.deps.app.reorder(this.overlay, this.deps.app.children.length);
   }
 
   // 新建连线：两节点间可存在多条连线，不做去重限制；
@@ -148,8 +143,7 @@ export class FlowModel {
   // 连线插入到形状层之下（首个 Shape 之前），保证画在节点下方
   insertEdge(edge: FlowEdge) {
     const idx = this.deps.app.children.findIndex((n) => n instanceof Shape);
-    if (idx === -1) this.deps.app.children.push(edge);
-    else this.deps.app.children.splice(idx, 0, edge);
+    this.deps.app.insert(edge, idx === -1 ? this.deps.app.children.length : idx);
   }
 
   removeShape(shape: Shape) {
@@ -164,18 +158,12 @@ export class FlowModel {
   }
 
   removeTop(node: Node) {
-    const i = this.deps.app.children.indexOf(node);
-    if (i !== -1) this.deps.app.children.splice(i, 1);
+    this.deps.app.remove(node);
   }
 
   // 按 z 序索引插回画布（undo/redo 重放同一索引，不依赖恢复时的树状态）
   insertAt(node: Node, idx: number) {
-    node.parent = null;
-    this.deps.app.children.splice(
-      Math.max(0, Math.min(idx, this.deps.app.children.length)),
-      0,
-      node,
-    );
+    this.deps.app.insert(node, idx);
   }
 
   // 删除捕获：形状 + 原 z 序索引 + 关联连线（各自的连线序与 z 序索引）。
@@ -215,8 +203,7 @@ export class FlowModel {
     this.removeTop(a);
     this.shapes.delete(a.id as string);
     if (idx !== -1) {
-      b.parent = null;
-      this.deps.app.children.splice(idx, 0, b);
+      this.deps.app.insert(b, idx);
     } else {
       this.deps.app.add(b);
     }
@@ -236,10 +223,7 @@ export class FlowModel {
       if (c instanceof Shape || c === this.overlay) break;
       to = j;
     }
-    if (to !== from) {
-      children.splice(from, 1);
-      children.splice(to, 0, edge);
-    }
+    if (to !== from) this.deps.app.reorder(edge, to);
   }
 
   // 导出当前数据（位置为最新拖拽结果）
