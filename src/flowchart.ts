@@ -1,7 +1,7 @@
 import { App, Node } from "@silker/core";
 import type { Plugin } from "@silker/core";
-import { Viewport } from "@silker/core-viewport";
-import { TextEditor } from "@silker/plugin-text-editor";
+import { Viewport, VIEWPORT_CAPABILITY } from "@silker/core-viewport";
+import { TextEditor, TEXT_EDITOR_CAPABILITY } from "@silker/plugin-text-editor";
 import type { TextEditorCapability } from "@silker/plugin-text-editor";
 import { Exporter, EXPORT_CAPABILITY } from "@silker/plugin-exporter";
 import type { ExportOptions } from "@silker/plugin-exporter";
@@ -16,12 +16,7 @@ import { BuiltinShapes, SHAPE_REGISTRY_CAPABILITY } from "./shape-registry";
 import type { ShapeRegistryCapability } from "./shape-registry";
 import { Shape } from "./Shape";
 import type { ShapeOptions } from "./Shape";
-import {
-  FlowEdge,
-  OPPOSITE_DIR,
-  PORT_DIR_VEC,
-  PORT_STUB,
-} from "./FlowEdge";
+import { FlowEdge, OPPOSITE_DIR, PORT_STUB } from "./FlowEdge";
 import type { FlowEdgeHints, PortDir } from "./FlowEdge";
 import type { FlowChangeType, FlowData, ShapeKind } from "./data";
 import type { Bounds, SnapGuides } from "./snap";
@@ -29,307 +24,46 @@ import { BuiltinSnap, SNAP_CAPABILITY } from "./snap-capability";
 import type { SnapCapability } from "./snap-capability";
 import { BuiltinEdgeRouter, EDGE_ROUTER_CAPABILITY } from "./edge-router";
 import type { EdgeRouterCapability } from "./edge-router";
-
-// 端口命中半径（世界坐标）
-const PORT_HIT_RADIUS = 10;
-
-// 选中框（bounds）外观与命中参数：尺寸用屏幕像素，除以视口缩放换算成世界坐标
-const SELECT_COLOR = "#3b82f6";
-const HANDLE_SIZE = 9; // 四角手柄边长（屏幕像素）
-const HANDLE_HIT = 8; // 手柄命中半径（屏幕像素）
-const EDGE_TOLERANCE = 5; // 边线命中容差（屏幕像素）
-const EDGE_HANDLE_HIT = 8; // 连线端点手柄命中半径（屏幕像素）
-const MIN_SIZE = 20; // 缩放最小尺寸（世界坐标）
-
-// 连线端口圆点外观：沿边中点外法向浮在形状外侧，不遮挡边线与箭头
-const PORT_RADIUS = 5; // 端口圆点半径（屏幕像素）
-const PORT_OFFSET = 24; // 端口圆点圆心相对边中点向外的偏移（屏幕像素）
-const PORT_HOVER_SCALE = 2.4; // 端口悬浮放大倍数，命中范围与放大后的视觉半径一致
-
-// 连线拖拽吸附：光标进入目标节点包围盒外扩该范围时，目标节点浮出对接手柄
-const LINK_SNAP_MARGIN = 16; // 吸附感应范围（屏幕像素）
+import { LinkPreview, SelectionOverlay } from "./overlay";
+import {
+  applyGroupResize,
+  applyResize,
+  cornerHit,
+  edgeHandleHit,
+  edgeHit,
+  findLinkTarget,
+  hitEdge,
+  hitShape,
+  hoverCursor,
+  marqueeHits,
+  portHit,
+  portPos,
+  previewToDir,
+  unionBounds,
+} from "./geometry";
+import type { ResizeHandle } from "./geometry";
+import {
+  bindFlowchartCommands,
+  groupResizeCommand,
+  moveCommand,
+  nudgeCommand,
+  reconnectCommand,
+  resizeCommand,
+  textCommand,
+} from "./commands";
 
 // 端口点击快速创建：点击（非拖拽）端口时沿该方向自动新建节点并连线；
 // 拖拽仍是手动连线，以按下后的位移区分两种意图
 const CLICK_MOVE_TOLERANCE = 4; // 判定点击的最大位移（屏幕像素）
 const CLICK_CREATE_GAP = 80; // 新节点与源节点边缘的间距（世界坐标）
 
-// 节点拖拽吸附：对齐参考线颜色（吸附算法与容差在吸附能力实现内，此处只负责渲染）
-const ALIGN_COLOR = "#eea5ffff"; // 对齐参考线颜色
-
-// 缩放手柄方位：四角 + 四边
-type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
-
-// 连线拖拽预览：与正式连线同款式的折线 + 箭头（from 为固定端端口及其方向，
-// to 为光标或吸附端端口；toDir 随光标相对出口端口的位置实时变化）。
-// 路由与渲染按能力键消费边路由能力（FlowChart 装配时注入）
-const LINK_PREVIEW_COLOR = "#3b82f6";
-class LinkPreview extends Node {
-  from = { x: 0, y: 0 };
-  to = { x: 0, y: 0 };
-  fromDir: PortDir = "right";
-  toDir: PortDir = "left";
-  // 两端直段长度：源端在创建时按其 portStub 设置，目标端吸附时跟随目标节点
-  fromStub = PORT_STUB;
-  toStub = PORT_STUB;
-  router!: EdgeRouterCapability;
-
-  render(ctx: CanvasRenderingContext2D) {
-    ctx.save();
-    const pts = this.router.route({
-      from: this.from,
-      fromDir: this.fromDir,
-      to: this.to,
-      toDir: this.toDir,
-      fromStub: this.fromStub,
-      toStub: this.toStub,
-    });
-    this.router.render(ctx, pts, {
-      color: LINK_PREVIEW_COLOR,
-      lineWidth: 2,
-      cornerRadius: 8,
-    });
-    ctx.restore();
-  }
-
-  hitTest() {
-    return false;
-  }
-}
-
-// 选中框覆盖层：为选中形状绘制 bounds 边框、四角缩放手柄与外浮的连线端口圆点，
-// 连线拖拽时为目标节点绘制对接手柄并高亮吸附端口，
-// 尺寸按视口缩放反算，保证任何缩放级别下都是恒定屏幕像素大小
-class SelectionOverlay extends Node {
-  constructor(
-    private getState: () => {
-      shape: Shape | null;
-      scale: number;
-      ports: Array<{ x: number; y: number }>;
-      // 悬浮中的端口方向：该端口圆点放大并显示方向箭头（点击快速建节点提示）
-      hoverPort: PortDir | null;
-      // 激活连线的首尾端点手柄（世界坐标）
-      edgeHandles: Array<{ x: number; y: number }>;
-      // 连线拖拽中的目标节点：ports 为其四个对接手柄，active 为吸附中的手柄
-      link: {
-        ports: Array<{ x: number; y: number }>;
-        active: { x: number; y: number } | null;
-      } | null;
-      // 节点拖拽对齐参考线：v 为竖线 x 坐标、h 为横线 y 坐标（世界坐标），
-      // spacing 为等间距测量线段
-      guides: SnapGuides | null;
-      // 框选拖拽中（插件橡皮筋之外的）实时组合框或多选组合 bounds，样式与单选框一致
-      marquee: Bounds | null;
-    },
-  ) {
-    super();
-  }
-
-  render(ctx: CanvasRenderingContext2D) {
-    const {
-      shape,
-      scale,
-      ports,
-      hoverPort,
-      edgeHandles,
-      link,
-      guides,
-      marquee,
-    } = this.getState();
-    const k = 1 / scale;
-    ctx.save();
-    // 框选框 / 多选组合框：与单选框同样式（边框 + 四角手柄），无连线端口
-    if (marquee) {
-      ctx.strokeStyle = SELECT_COLOR;
-      ctx.lineWidth = 1.5 * k;
-      ctx.strokeRect(marquee.x, marquee.y, marquee.width, marquee.height);
-      const s = HANDLE_SIZE * k;
-      const { x, y, width: w, height: h } = marquee;
-      for (const [cx, cy] of [
-        [x, y],
-        [x + w, y],
-        [x + w, y + h],
-        [x, y + h],
-      ]) {
-        ctx.beginPath();
-        ctx.rect(cx - s / 2, cy - s / 2, s, s);
-        ctx.fillStyle = "#ffffff";
-        ctx.fill();
-        ctx.stroke();
-      }
-    }
-    if (shape) {
-      const { x, y, width: w, height: h } = shape;
-      // bounds 边框
-      ctx.strokeStyle = SELECT_COLOR;
-      ctx.lineWidth = 1.5 * k;
-      ctx.strokeRect(x, y, w, h);
-      // 四角手柄（白底蓝边方块）
-      const s = HANDLE_SIZE * k;
-      for (const [cx, cy] of [
-        [x, y],
-        [x + w, y],
-        [x + w, y + h],
-        [x, y + h],
-      ]) {
-        ctx.beginPath();
-        ctx.rect(cx - s / 2, cy - s / 2, s, s);
-        ctx.fillStyle = "#ffffff";
-        ctx.fill();
-        ctx.stroke();
-      }
-      // 四向连线端口圆点（浮在形状外侧），悬浮端口放大并显示方向箭头
-      const dirs = ["top", "right", "bottom", "left"] as const;
-      this.drawPorts(
-        ctx,
-        ports,
-        k,
-        null,
-        hoverPort ? dirs.indexOf(hoverPort) : -1,
-        hoverPort,
-      );
-    }
-    // 激活连线的首尾端点手柄（白底蓝边圆形）
-    if (edgeHandles.length) {
-      ctx.strokeStyle = SELECT_COLOR;
-      ctx.lineWidth = 1.5 * k;
-      const r = (HANDLE_SIZE / 2) * k;
-      for (const h of edgeHandles) {
-        ctx.beginPath();
-        ctx.arc(h.x, h.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = "#ffffff";
-        ctx.fill();
-        ctx.stroke();
-      }
-    }
-    // 连线拖拽目标：浮出对接手柄，吸附中的手柄实心高亮
-    if (link) this.drawPorts(ctx, link.ports, k, link.active);
-    // 对齐参考线：贯穿画布的虚线
-    if (guides && (guides.v.length || guides.h.length)) {
-      ctx.strokeStyle = ALIGN_COLOR;
-      ctx.lineWidth = 1 * k;
-      ctx.setLineDash([4 * k, 4 * k]);
-      ctx.beginPath();
-      for (const x of guides.v) {
-        ctx.moveTo(x, -10000);
-        ctx.lineTo(x, 10000);
-      }
-      for (const y of guides.h) {
-        ctx.moveTo(-10000, y);
-        ctx.lineTo(10000, y);
-      }
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    // 等间距测量线：虚线段 + 两端刻度 + 间距数值标签
-    if (guides && guides.spacing.length) {
-      ctx.strokeStyle = ALIGN_COLOR;
-      ctx.lineWidth = 1 * k;
-      ctx.setLineDash([4 * k, 4 * k]);
-      ctx.beginPath();
-      for (const g of guides.spacing) {
-        ctx.moveTo(g.x1, g.y1);
-        ctx.lineTo(g.x2, g.y2);
-      }
-      ctx.stroke();
-      ctx.setLineDash([]);
-      // 两端垂直于线段的刻度
-      const t = 3 * k;
-      ctx.beginPath();
-      for (const g of guides.spacing) {
-        if (g.y1 === g.y2) {
-          ctx.moveTo(g.x1, g.y1 - t);
-          ctx.lineTo(g.x1, g.y1 + t);
-          ctx.moveTo(g.x2, g.y2 - t);
-          ctx.lineTo(g.x2, g.y2 + t);
-        } else {
-          ctx.moveTo(g.x1 - t, g.y1);
-          ctx.lineTo(g.x1 + t, g.y1);
-          ctx.moveTo(g.x2 - t, g.y2);
-          ctx.lineTo(g.x2 + t, g.y2);
-        }
-      }
-      ctx.stroke();
-      // 数值标签（圆角底 + 白字），缩放级别恒定屏幕像素大小
-      ctx.font = `${10 * k}px system-ui, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      const padX = 3 * k;
-      const h = 14 * k;
-      for (const g of guides.spacing) {
-        const label = String(Math.round(g.value));
-        const w = ctx.measureText(label).width;
-        const mx = (g.x1 + g.x2) / 2;
-        const my = (g.y1 + g.y2) / 2;
-        ctx.beginPath();
-        ctx.roundRect(mx - w / 2 - padX, my - h / 2, w + padX * 2, h, h / 2);
-        ctx.fillStyle = ALIGN_COLOR;
-        ctx.fill();
-        ctx.fillStyle = "#ffffff";
-        ctx.fillText(label, mx, my);
-      }
-    }
-    ctx.restore();
-  }
-
-  // 绘制端口圆点：active 非空时该位置的圆点改为实心蓝（吸附高亮）；
-  // hoverIdx/hoverDir 指向悬浮端口：放大、实心蓝并在内部绘制指向外侧的方向箭头
-  // （提示点击可沿该方向快速新建节点）
-  private drawPorts(
-    ctx: CanvasRenderingContext2D,
-    pts: Array<{ x: number; y: number }>,
-    k: number,
-    active: { x: number; y: number } | null,
-    hoverIdx = -1,
-    hoverDir?: PortDir | null,
-  ) {
-    ctx.strokeStyle = SELECT_COLOR;
-    pts.forEach((p, i) => {
-      const isActive = active && active.x === p.x && active.y === p.y;
-      const isHover = i === hoverIdx && hoverDir;
-      const r = (isHover ? PORT_RADIUS * PORT_HOVER_SCALE : PORT_RADIUS) * k;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-      if (isActive || isHover) {
-        ctx.fillStyle = SELECT_COLOR;
-        ctx.fill();
-      } else {
-        ctx.fillStyle = "#ffffff";
-        ctx.fill();
-        // 显式恢复描边样式：悬浮端口的白色箭头会改写 strokeStyle，
-        // 不重置会让其后绘制的端口用白色描边（视觉上"样式被改变"）
-        ctx.strokeStyle = SELECT_COLOR;
-        ctx.lineWidth = 1.5 * k;
-        ctx.stroke();
-      }
-      // 悬浮箭头：白色雪佛龙指向端口外法向
-      if (isHover && hoverDir) {
-        const v = PORT_DIR_VEC[hoverDir];
-        const n = { x: -v.y, y: v.x };
-        const tip = { x: p.x + v.x * r * 0.45, y: p.y + v.y * r * 0.45 };
-        const base = { x: p.x - v.x * r * 0.2, y: p.y - v.y * r * 0.2 };
-        const w = r * 0.42;
-        ctx.strokeStyle = "#ffffff";
-        ctx.lineWidth = 1.5 * k;
-        ctx.lineCap = "round";
-        ctx.beginPath();
-        ctx.moveTo(base.x + n.x * w, base.y + n.y * w);
-        ctx.lineTo(tip.x, tip.y);
-        ctx.lineTo(base.x - n.x * w, base.y - n.y * w);
-        ctx.stroke();
-        ctx.lineCap = "butt";
-      }
-    });
-  }
-
-  hitTest() {
-    return false;
-  }
-}
-
 export interface FlowChartOptions {
   canvas: HTMLCanvasElement;
   data: FlowData;
+  // 显式装配点：传入宿主自建并装配好官方外部插件（视口/指针/导出/历史/命令/
+  // 编辑器/选中）的 App，本场景按能力键复用这些能力、只补齐自有插件；
+  // 缺省时便捷模式自建 App 并装配同一套官方插件（开箱即用）
+  app?: App;
   // 数据变化回调：新增 / 删除 / 移动 / 连线 / 文本编辑结束，当前数据用 toJSON() 导出
   onChange?: (type: FlowChangeType) => void;
   // 额外装配的插件（在官方形状/吸附插件之后、初始数据 load 之前安装）：
@@ -434,44 +168,26 @@ export class FlowChart {
 
   constructor(private options: FlowChartOptions) {
     this.onChange = options.onChange;
-    this.app = new App(options.canvas);
-    // 安装历史记录插件：命令模式 undo/redo 双栈（默认容量 100），install 时自注册
-    // 历史能力，各变更入口按能力键消费（只认能力名与契约，不认插件实例）
-    this.app.use(new History());
+    if (options.app) {
+      // 显式装配模式：宿主自建 App 并装配官方外部插件（视口/指针/导出/历史/
+      // 命令/编辑器/选中），本场景按能力键复用这些能力，只补齐自有插件
+      this.app = options.app;
+    } else {
+      // 便捷模式：自建 App 并装配官方外部插件（开箱即用，与显式装配同一套）
+      this.app = new App(options.canvas);
+      // 安装历史记录插件：命令模式 undo/redo 双栈（默认容量 100），install 时自注册
+      // 历史能力，各变更入口按能力键消费（只认能力名与契约，不认插件实例）
+      this.app.use(new History());
+      // 安装命令与键位插件：install 时自注册命令能力，此后仅按能力键消费
+      this.app.use(new Command());
+      // 安装视口插件：视口状态唯一属主为 App 的 Camera
+      this.app.use(new Viewport());
+      // 安装指针交互插件：统一事件绑定/撤销与坐标换算（机制层），交互策略由本场景声明
+      this.app.use(new Pointer());
+      // 安装导出插件：install 时自注册导出能力，toImage 按能力键消费
+      this.app.use(new Exporter());
+    }
     this.history = this.app.require(HISTORY_CAPABILITY);
-    // 安装命令与键位插件：撤销/重做/删除注册为命令并绑定默认键位，document keydown
-    // 由插件统一分发；应用层与第三方可按能力键复用命令或重绑键位。
-    // install 时自注册命令能力，此后仅按能力键消费
-    this.app.use(new Command());
-    const commands = this.app.require(COMMAND_CAPABILITY);
-    // 分发守卫与 onKeyDown 同款：编辑或覆盖层持焦时按键属于输入，交由编辑器处理
-    commands.guard = (e) => !this.editing && !this.editor.hasFocus();
-    commands.register({
-      id: "flowchart.undo",
-      title: "撤销",
-      run: () => this.undo(),
-    });
-    commands.register({
-      id: "flowchart.redo",
-      title: "重做",
-      run: () => this.redo(),
-    });
-    commands.register({
-      id: "flowchart.delete",
-      title: "删除选中",
-      enabled: () => this.sel.items.length > 0,
-      run: () => this.deleteSelected(),
-    });
-    commands.bind("mod+z", "flowchart.undo");
-    commands.bind("mod+shift+z", "flowchart.redo");
-    commands.bind("mod+y", "flowchart.redo");
-    commands.bind("delete", "flowchart.delete");
-    commands.bind("backspace", "flowchart.delete");
-    this.app.use(new Viewport());
-    // 安装指针交互插件：统一事件绑定/撤销与坐标换算（机制层），交互策略由本场景声明
-    this.app.use(new Pointer());
-    // 安装导出插件：install 时自注册导出能力，toImage 按能力键消费
-    this.app.use(new Exporter());
     // 安装官方形状/吸附/边路由插件（自注册各自能力），再装配应用层传入的第三方
     // 插件（可注册/覆盖形状、同名覆盖吸附策略与边路由，初始数据 load 前生效）；
     // 此后仅按能力键消费
@@ -482,45 +198,24 @@ export class FlowChart {
     this.registry = this.app.require(SHAPE_REGISTRY_CAPABILITY);
     this.snapper = this.app.require(SNAP_CAPABILITY);
     this.router = this.app.require(EDGE_ROUTER_CAPABILITY);
-    const editor = new TextEditor({
-      // 输入实时同步：文本重测后重新居中（不改形状尺寸），覆盖层跟随新位置
-      onInput: () => {
-        const shape = this.editing;
-        if (!shape) return;
-        shape.layout();
-        this.app.requestRender();
-        this.editor.reposition();
-      },
-      // 编辑结束（失焦）：文字居中落定并通知外部
-      onEditEnd: () => this.finishEdit(),
+    // 显式声明对视口能力的依赖：命中换算与覆盖层绘制都按视口缩放反算
+    this.app.require(VIEWPORT_CAPABILITY);
+    // 撤销/重做/删除注册为命令并绑定默认键位，document keydown 由命令插件
+    // 统一分发；应用层与第三方可按能力键复用命令或重绑键位
+    bindFlowchartCommands(this.app.require(COMMAND_CAPABILITY), {
+      editing: () => this.editing !== null,
+      editorFocused: () => this.editor.hasFocus(),
+      hasSelection: () => this.sel.items.length > 0,
+      undo: () => this.undo(),
+      redo: () => this.redo(),
+      deleteSelected: () => this.deleteSelected(),
     });
-    this.app.use(editor);
-    this.editor = editor;
-    // 安装选中插件：单选/多选模型与框选会话（机制），选中语义（selected 高亮、
-    // 连线置顶等）由本场景定义；框选命中规则 = 与矩形相交的形状
-    this.app.use(
-      new Selection<Shape | FlowEdge>({
-        hitRect: (rect) => this.marqueeHits(rect),
-      }),
-    );
-    this.sel = this.app.require(selectionCapabilityKey<Shape | FlowEdge>());
-    // 拖框中实时显示已框中节点的整体选框（随拖拽更新，未框中节点时不显示）
-    this.sel.onMarqueeMove = (_rect, hits) => {
-      this.marqueeCombo = hits.length ? this.unionBounds(hits) : null;
-    };
-    // 框选落定：单个退化为普通单选，多个进入组合选中，落空保持无选中
-    this.sel.onMarqueeEnd = (_rect, hits) => {
-      this.marqueeCombo = null;
-      if (hits.length === 1) this.select(hits[0]);
-      else if (hits.length > 1) {
-        this.sel.set(hits);
-        this.app.requestRender();
-      }
-    };
+    this.editor = this.setupEditor();
+    this.sel = this.setupSelection();
     this.load(options.data);
     // 选中框覆盖层置于最上层（registerShape 追加新节点后需 raiseOverlay 保持）
     this.overlay = new SelectionOverlay(() => {
-      const scale = this.app.renderer.viewport.scale;
+      const scale = this.app.camera.viewport.scale;
       const dirs = ["top", "right", "bottom", "left"] as const;
       const selShape = this.selShape;
       const selEdge = this.selEdge;
@@ -528,7 +223,7 @@ export class FlowChart {
         shape: selShape,
         scale,
         ports: selShape
-          ? dirs.map((dir) => this.portPos(selShape, dir, scale))
+          ? dirs.map((dir) => portPos(selShape, dir, scale))
           : [],
         hoverPort: this.hoverPort,
         // 激活连线的首尾端点手柄（端点拖拽期间隐藏）
@@ -553,6 +248,59 @@ export class FlowChart {
     });
     this.app.add(this.overlay);
     this.bindEvents(options.canvas);
+  }
+
+  // 装配文本编辑器：显式模式按能力键取回宿主装配的实例，便捷模式自建并安装；
+  // 业务回调统一写到实例的公开回调字段上（两种模式共用同一套回调）
+  private setupEditor(): TextEditorCapability {
+    let editor: TextEditor;
+    if (this.options.app) {
+      editor = this.app.require(TEXT_EDITOR_CAPABILITY) as TextEditor;
+    } else {
+      editor = new TextEditor();
+      this.app.use(editor);
+    }
+    // 输入实时同步：文本重测后重新居中（不改形状尺寸），覆盖层跟随新位置
+    editor.onInput = () => {
+      const shape = this.editing;
+      if (!shape) return;
+      shape.layout();
+      this.app.requestRender();
+      this.editor.reposition();
+    };
+    // 编辑结束（失焦）：文字居中落定并通知外部
+    editor.onEditEnd = () => this.finishEdit();
+    return editor;
+  }
+
+  // 装配选中插件：单选/多选模型与框选会话（机制），选中语义（selected 高亮、
+  // 连线置顶等）由本场景定义；显式模式按能力键取回宿主装配的实例，
+  // 便捷模式自建并安装。框选命中规则 = 与矩形相交的形状
+  private setupSelection(): SelectionCapability<Shape | FlowEdge> {
+    let selection: Selection<Shape | FlowEdge>;
+    if (this.options.app) {
+      selection = this.app.require(
+        selectionCapabilityKey<Shape | FlowEdge>(),
+      ) as Selection<Shape | FlowEdge>;
+    } else {
+      selection = new Selection<Shape | FlowEdge>();
+      this.app.use(selection);
+    }
+    selection.hitRect = (rect) => marqueeHits(this.shapes.values(), rect);
+    // 拖框中实时显示已框中节点的整体选框（随拖拽更新，未框中节点时不显示）
+    selection.onMarqueeMove = (_rect, hits) => {
+      this.marqueeCombo = hits.length ? unionBounds(hits) : null;
+    };
+    // 框选落定：单个退化为普通单选，多个进入组合选中，落空保持无选中
+    selection.onMarqueeEnd = (_rect, hits) => {
+      this.marqueeCombo = null;
+      if (hits.length === 1) this.select(hits[0]);
+      else if (hits.length > 1) {
+        selection.set(hits);
+        this.app.requestRender();
+      }
+    };
+    return selection;
   }
 
   //#region 公开 API
@@ -943,35 +691,7 @@ export class FlowChart {
   private get multiBounds(): Bounds | null {
     const shapes = this.selShapes;
     if (shapes.length < 2) return null;
-    return this.unionBounds(shapes);
-  }
-
-  // 多个形状的并集包围盒（接受任意含 x/y/width/height 的载体，含原始位置快照）
-  private unionBounds(
-    shapes: Array<{ x: number; y: number; width: number; height: number }>,
-  ): Bounds {
-    let x0 = Infinity;
-    let y0 = Infinity;
-    let x1 = -Infinity;
-    let y1 = -Infinity;
-    for (const s of shapes) {
-      x0 = Math.min(x0, s.x);
-      y0 = Math.min(y0, s.y);
-      x1 = Math.max(x1, s.x + s.width);
-      y1 = Math.max(y1, s.y + s.height);
-    }
-    return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
-  }
-
-  // 与框选矩形相交的形状（相交即命中）
-  private marqueeHits(r: Bounds): Shape[] {
-    return [...this.shapes.values()].filter(
-      (sh) =>
-        sh.x < r.x + r.width &&
-        sh.x + sh.width > r.x &&
-        sh.y < r.y + r.height &&
-        sh.y + sh.height > r.y,
-    );
+    return unionBounds(shapes);
   }
 
   // 把连线移到连线层最上（保持在形状层/覆盖层之下）
@@ -1011,30 +731,6 @@ export class FlowChart {
   private get selShapes(): Shape[] {
     return this.sel.items.filter((s): s is Shape => s instanceof Shape);
   }
-
-  // 命中连线：距折线各段容差内命中（世界坐标容差）
-  private hitEdge(p: { x: number; y: number }, scale: number): FlowEdge | null {
-    const tol = EDGE_TOLERANCE / scale;
-    for (const edge of this.edges) {
-      if (edge.hitPoint(p, tol)) return edge;
-    }
-    return null;
-  }
-
-  // 连线端点手柄命中：返回命中的端，未命中返回 null
-  private edgeHandleHit(
-    edge: FlowEdge,
-    p: { x: number; y: number },
-    scale: number,
-  ): "from" | "to" | null {
-    const pts = edge.points;
-    if (pts.length < 2) return null;
-    const r = EDGE_HANDLE_HIT / scale;
-    if (Math.hypot(p.x - pts[0].x, p.y - pts[0].y) <= r) return "from";
-    const last = pts[pts.length - 1];
-    if (Math.hypot(p.x - last.x, p.y - last.y) <= r) return "to";
-    return null;
-  }
   //#endregion
 
   //#region 编辑
@@ -1058,19 +754,7 @@ export class FlowChart {
     // 文本相对会话起点确有变化才记历史：record 仅入栈不执行，因变更已发生
     const old = this.editingOld;
     if (old.shape === shape && shape.text.text !== old.text) {
-      const before = old.text;
-      const after = shape.text.text;
-      this.history.record({
-        type: "text",
-        redo: () => {
-          shape.text.text = after;
-          shape.layout();
-        },
-        undo: () => {
-          shape.text.text = before;
-          shape.layout();
-        },
-      });
+      this.history.record(textCommand(shape, old.text, shape.text.text));
     }
     this.app.requestRender();
     this.onChange?.("text");
@@ -1092,130 +776,10 @@ export class FlowChart {
     );
   }
 
-  // 命中形状：hitNode 返回最深层（可能是形状内嵌 Text），沿父链回溯到 Shape
-  private hitShape(p: { x: number; y: number }): Shape | null {
-    for (let i = this.app.children.length - 1; i >= 0; i--) {
-      const hit = this.app.children[i].hitNode(p.x, p.y);
-      if (!hit) continue;
-      let cur: Node | null = hit;
-      while (cur && !(cur instanceof Shape)) cur = cur.parent;
-      if (cur) return cur;
-    }
-    return null;
-  }
-
-  // 端口显示位置：边中点沿外法向偏移 PORT_OFFSET 屏幕像素（圆点浮在形状外侧）。
-  // 节点描边为 border-box（画在尺寸内部、外缘即几何边界），圆点与可见边线的间距恒定
-  private portPos(
-    shape: Shape,
-    dir: "top" | "right" | "bottom" | "left",
-    scale: number,
-  ) {
-    const port = shape.portAt(dir);
-    const off = PORT_OFFSET / scale;
-    const d = {
-      top: { x: 0, y: -1 },
-      right: { x: 1, y: 0 },
-      bottom: { x: 0, y: 1 },
-      left: { x: -1, y: 0 },
-    }[dir];
-    return { x: port.x + d.x * off, y: port.y + d.y * off };
-  }
-
-  // 端口命中：返回命中的方向，未命中返回 null（按外浮后的圆点位置判定）
-  private portHit(shape: Shape, p: { x: number; y: number }, scale: number) {
-    // 命中范围 = 悬浮放大后的视觉圆（PORT_RADIUS * PORT_HOVER_SCALE），
-    // 进入即触发悬浮/点击，之外不响应
-    const r = (PORT_RADIUS * PORT_HOVER_SCALE) / scale;
-    for (const dir of ["top", "right", "bottom", "left"] as const) {
-      const port = this.portPos(shape, dir, scale);
-      if (Math.hypot(p.x - port.x, p.y - port.y) <= r) return dir;
-    }
-    return null;
-  }
-
-  // 四角手柄命中（屏幕像素半径换算到世界坐标），形状与框选框通用
-  private cornerHit(
-    b: Bounds,
-    p: { x: number; y: number },
-    scale: number,
-  ): "nw" | "ne" | "se" | "sw" | null {
-    const r = HANDLE_HIT / scale;
-    const { x, y, width: w, height: h } = b;
-    const corners: Array<["nw" | "ne" | "se" | "sw", number, number]> = [
-      ["nw", x, y],
-      ["ne", x + w, y],
-      ["se", x + w, y + h],
-      ["sw", x, y + h],
-    ];
-    for (const [handle, cx, cy] of corners) {
-      if (Math.hypot(p.x - cx, p.y - cy) <= r) return handle;
-    }
-    return null;
-  }
-
-  // bounds 边线命中（四边拖拽缩放）：距边线 EDGE_TOLERANCE 内命中；
-  // 四角让位给角手柄、四边中点让位给连线端口（连接与缩放互不干扰）
-  private edgeHit(
-    b: Bounds,
-    p: { x: number; y: number },
-    scale: number,
-  ): "n" | "e" | "s" | "w" | null {
-    const tol = EDGE_TOLERANCE / scale;
-    const nearCorner = HANDLE_HIT / scale + 2;
-    const nearPort = PORT_HIT_RADIUS;
-    const { x, y, width: w, height: h } = b;
-    const sides: Array<
-      [
-        "n" | "e" | "s" | "w",
-        { x: number; y: number },
-        { x: number; y: number },
-      ]
-    > = [
-      ["n", { x, y }, { x: x + w, y }],
-      ["e", { x: x + w, y }, { x: x + w, y: y + h }],
-      ["s", { x, y: y + h }, { x: x + w, y: y + h }],
-      ["w", { x, y }, { x, y: y + h }],
-    ];
-    for (const [side, a, b] of sides) {
-      const len = Math.hypot(b.x - a.x, b.y - a.y);
-      if (len === 0) continue;
-      // 点到线段的投影参数 t（截断到 0..1）与垂距
-      const t = Math.max(
-        0,
-        Math.min(
-          1,
-          ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / (len * len),
-        ),
-      );
-      const proj = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
-      if (Math.hypot(p.x - proj.x, p.y - proj.y) > tol) continue;
-      const along = t * len;
-      if (along < nearCorner || len - along < nearCorner) continue;
-      if (Math.abs(along - len / 2) < nearPort) continue;
-      return side;
-    }
-    return null;
-  }
-
-  // 悬停光标：手柄/边线给缩放光标（端口与节点本体保持默认光标）
-  private hoverCursor(
-    shape: Shape,
-    p: { x: number; y: number },
-    scale: number,
-  ): string | null {
-    const corner = this.cornerHit(shape, p, scale);
-    if (corner)
-      return corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize";
-    const side = this.edgeHit(shape, p, scale);
-    if (side) return side === "n" || side === "s" ? "ns-resize" : "ew-resize";
-    return null;
-  }
-
   private onDown(e: MouseEvent) {
     if (e.button !== 0) return;
-    const p = this.app.renderer.toWorld(e.clientX, e.clientY);
-    const scale = this.app.renderer.viewport.scale;
+    const p = this.app.camera.toWorld(e.clientX, e.clientY);
+    const scale = this.app.camera.viewport.scale;
     // 按下后进入交互会话，悬浮端口提示不再显示
     this.hoverPort = null;
     if (this.hoverEdge) {
@@ -1225,7 +789,7 @@ export class FlowChart {
     // 选中态下按优先级命中：角手柄缩放 → 端口连线 → 边线缩放 → 形状体移动
     const sel = this.selShape;
     if (sel) {
-      const corner = this.cornerHit(sel, p, scale);
+      const corner = cornerHit(sel, p, scale);
       if (corner) {
         this.session = {
           kind: "resize",
@@ -1236,7 +800,7 @@ export class FlowChart {
         };
         return;
       }
-      const dir = this.portHit(sel, p, scale);
+      const dir = portHit(sel, p, scale);
       if (dir) {
         // 按下时不创建预览边（此刻无法区分点击/拖拽）：位移超过点击阈值
         // 进入拖拽连线时才插入预览并取消选中（见 onMove 的 armed 逻辑）
@@ -1246,7 +810,7 @@ export class FlowChart {
         preview.fromDir = dir;
         preview.fromStub = sel.portStub(dir);
         preview.to = p;
-        preview.toDir = this.previewToDir(dir, preview.from, p);
+        preview.toDir = previewToDir(dir, preview.from, p);
         this.session = {
           kind: "link",
           source: sel,
@@ -1257,7 +821,7 @@ export class FlowChart {
         this.app.requestRender();
         return;
       }
-      const side = this.edgeHit(sel, p, scale);
+      const side = edgeHit(sel, p, scale);
       if (side) {
         this.session = {
           kind: "resize",
@@ -1273,7 +837,7 @@ export class FlowChart {
     const selEdgeDown = this.selEdge;
     if (selEdgeDown) {
       const edge = selEdgeDown;
-      const which = this.edgeHandleHit(edge, p, scale);
+      const which = edgeHandleHit(edge, p, scale);
       if (which) {
         // 直接拖拽原连线：被拖端进入拖拽态，路由以光标为虚拟端口
         const fixedDir = which === "from" ? edge.toDir : edge.fromDir;
@@ -1283,7 +847,7 @@ export class FlowChart {
             : edge.fromNode.portAt(edge.fromDir);
         edge.dragWhich = which;
         edge.dragPoint = p;
-        edge.dragDir = this.previewToDir(fixedDir, fixedPort, p);
+        edge.dragDir = previewToDir(fixedDir, fixedPort, p);
         this.session = { kind: "edge-move", edge, which };
         this.options.canvas.style.cursor = "crosshair";
         this.app.requestRender();
@@ -1293,7 +857,7 @@ export class FlowChart {
     // 多选组合框的手柄/边线：整体缩放（优先于命中形状）
     const mb = this.multiBounds;
     if (mb) {
-      const handle = this.cornerHit(mb, p, scale) ?? this.edgeHit(mb, p, scale);
+      const handle = cornerHit(mb, p, scale) ?? edgeHit(mb, p, scale);
       if (handle) {
         this.session = {
           kind: "group-resize",
@@ -1311,7 +875,7 @@ export class FlowChart {
         return;
       }
     }
-    const hit = this.hitShape(p);
+    const hit = hitShape(this.app.children, p);
     if (hit) {
       if (this.sel.items.includes(hit)) {
         // 组内形状：整体移动，保持多选（单击不动则抬起时塌缩为单选）
@@ -1342,7 +906,7 @@ export class FlowChart {
       return;
     }
     // 形状未命中时尝试命中连线（形状层在上，优先选中形状）
-    const hitLine = this.hitEdge(p, scale);
+    const hitLine = hitEdge(this.edges, p, scale);
     if (hitLine) {
       this.select(hitLine);
       this.app.requestRender();
@@ -1352,7 +916,7 @@ export class FlowChart {
     // 节点上，菱形/椭圆空白角落也可拖拽）；未拖动时保持原选中态不塌缩
     const selList = this.selShapes;
     if (selList.length) {
-      const b = this.unionBounds(selList);
+      const b = unionBounds(selList);
       if (
         p.x >= b.x &&
         p.x <= b.x + b.width &&
@@ -1385,36 +949,36 @@ export class FlowChart {
     if (!s) {
       // 右键拖拽视口时跳过：viewport 已设置 grabbing，不要覆盖
       if (e.buttons & 2) return;
-      const p = this.app.renderer.toWorld(e.clientX, e.clientY);
-      const scale = this.app.renderer.viewport.scale;
+      const p = this.app.camera.toWorld(e.clientX, e.clientY);
+      const scale = this.app.camera.viewport.scale;
       // 光标反馈先行：手柄/边线给缩放光标、连线端点手柄给移动光标
       let cursor: string | null = null;
       // 多选组合框的手柄/边线优先给缩放光标
       const mb = this.multiBounds;
       if (mb) {
-        const corner = this.cornerHit(mb, p, scale);
+        const corner = cornerHit(mb, p, scale);
         if (corner)
           cursor =
             corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize";
         else {
-          const side = this.edgeHit(mb, p, scale);
+          const side = edgeHit(mb, p, scale);
           if (side)
             cursor = side === "n" || side === "s" ? "ns-resize" : "ew-resize";
         }
       }
       if (cursor === null)
         cursor = this.selShape
-          ? this.hoverCursor(this.selShape, p, scale)
+          ? hoverCursor(this.selShape, p, scale)
           : null;
       const selEdgeHover = this.selEdge;
       if (
         cursor === null &&
         selEdgeHover &&
-        this.edgeHandleHit(selEdgeHover, p, scale)
+        edgeHandleHit(selEdgeHover, p, scale)
       )
         cursor = "move";
       // 悬浮端口跟踪：单选形状的端口上悬浮时覆盖层放大该圆点并绘制方向箭头
-      const hp = this.selShape ? this.portHit(this.selShape, p, scale) : null;
+      const hp = this.selShape ? portHit(this.selShape, p, scale) : null;
       if (hp !== this.hoverPort) {
         this.hoverPort = hp;
         this.app.requestRender();
@@ -1424,8 +988,8 @@ export class FlowChart {
       // 场景命中，但端点手柄压在连线上、端口浮在连线经过处，悬浮时不应穿透
       // 高亮下层连线——光标反馈已表达交互意图）
       const onHandle = cursor !== null || hp !== null;
-      const shapeHit = this.hitShape(p);
-      const he = onHandle || shapeHit ? null : this.hitEdge(p, scale);
+      const shapeHit = hitShape(this.app.children, p);
+      const he = onHandle || shapeHit ? null : hitEdge(this.edges, p, scale);
       if (he !== this.hoverEdge) {
         const prev = this.hoverEdge;
         if (prev) prev.hovered = false;
@@ -1445,7 +1009,7 @@ export class FlowChart {
       this.options.canvas.style.cursor = cursor ?? "";
       return;
     }
-    const p = this.app.renderer.toWorld(e.clientX, e.clientY);
+    const p = this.app.camera.toWorld(e.clientX, e.clientY);
     if (s.kind === "move") {
       s.moved = true;
       if (s.group) {
@@ -1456,7 +1020,7 @@ export class FlowChart {
         // 已被上一帧吸附修正过的当前位置，上一帧的修正量会泄漏进本帧的吸附
         // 计算，吸附会在开/关之间震荡（参考线闪烁、整体位置抖动）
         const exclude = new Set([s.shape, ...s.group.map((g) => g.shape)]);
-        const b0 = this.unionBounds([
+        const b0 = unionBounds([
           {
             x: s.origin.x,
             y: s.origin.y,
@@ -1489,13 +1053,13 @@ export class FlowChart {
       }
       this.app.requestRender();
     } else if (s.kind === "resize") {
-      this.applyResize(s, p.x - s.start.x, p.y - s.start.y);
+      applyResize(s.shape, s.handle, s.origin, p.x - s.start.x, p.y - s.start.y);
       this.app.requestRender();
     } else if (s.kind === "group-resize") {
-      this.applyGroupResize(s, p.x - s.start.x, p.y - s.start.y);
+      applyGroupResize(s.handle, s.origin, s.origins, p.x - s.start.x, p.y - s.start.y);
       this.app.requestRender();
     } else if (s.kind === "link") {
-      const scale = this.app.renderer.viewport.scale;
+      const scale = this.app.camera.viewport.scale;
       // 位移超过点击阈值才确认是拖拽连线：此时才插入预览边并取消选中
       if (!s.armed) {
         if (
@@ -1520,7 +1084,7 @@ export class FlowChart {
       } else {
         s.preview.to = p;
         s.preview.toStub = PORT_STUB;
-        s.preview.toDir = this.previewToDir(s.sourceDir, s.preview.from, p);
+        s.preview.toDir = previewToDir(s.sourceDir, s.preview.from, p);
       }
       this.app.requestRender();
     } else if (s.kind === "edge-move") {
@@ -1538,60 +1102,30 @@ export class FlowChart {
             ? s.edge.toNode.portAt(s.edge.toDir)
             : s.edge.fromNode.portAt(s.edge.fromDir);
         s.edge.dragPoint = p;
-        s.edge.dragDir = this.previewToDir(fixedDir, fixedPort, p);
+        s.edge.dragDir = previewToDir(fixedDir, fixedPort, p);
       }
       this.app.requestRender();
     }
-  }
-
-  // 自由拖拽时预览的虚拟进入方向：与出口方向同轴，按光标相对出口端口的位置
-  // 选边——光标在出口外法向一侧时沿行进方向顺势进入对侧（如从下方出来、
-  // 光标在下方则按从上面进入，形成下、右、下的顺向路径），越过出口端口时同侧进入
-  private previewToDir(
-    exitDir: PortDir,
-    exitPort: { x: number; y: number },
-    p: { x: number; y: number },
-  ): PortDir {
-    const v = PORT_DIR_VEC[exitDir];
-    const proj = (p.x - exitPort.x) * v.x + (p.y - exitPort.y) * v.y;
-    return proj > 0 ? OPPOSITE_DIR[exitDir] : exitDir;
   }
 
   // 连线拖拽中更新吸附目标：光标进入某节点包围盒外扩 LINK_SNAP_MARGIN 范围时，
   // 该节点成为目标（浮出对接手柄），并吸附到距光标最近的端口（任意节点均可，
   // 包括连线/预览自身的节点——支持改接边与自环）
   private updateLinkTarget(p: { x: number; y: number }) {
-    const scale = this.app.renderer.viewport.scale;
-    const m = LINK_SNAP_MARGIN / scale;
-    this.linkTarget = null;
-    this.linkSnap = null;
-    for (const shape of this.shapes.values()) {
-      if (
-        p.x < shape.x - m ||
-        p.x > shape.x + shape.width + m ||
-        p.y < shape.y - m ||
-        p.y > shape.y + shape.height + m
-      )
-        continue;
-      this.linkTarget = shape;
-      let best = Infinity;
-      for (const dir of ["top", "right", "bottom", "left"] as const) {
-        const q = this.portPos(shape, dir, scale);
-        const d = Math.hypot(p.x - q.x, p.y - q.y);
-        if (d < best) {
-          best = d;
-          this.linkSnap = dir;
-        }
-      }
-      break;
-    }
+    const r = findLinkTarget(
+      this.shapes.values(),
+      p,
+      this.app.camera.viewport.scale,
+    );
+    this.linkTarget = r ? r.target : null;
+    this.linkSnap = r ? r.snap : null;
   }
 
   // 节点拖拽吸附：候选参考目标 = 除被拖载体（单形状）与组内成员（组合拖拽）
   // 之外的全部形状；吸附算法按能力键消费（BuiltinSnap 官方实现，第三方可覆盖），
   // 这里只负责筛选候选、回传迟滞状态、把位移写回载体
   private applySnap(shape: Bounds, exclude: Set<Shape> | null = null) {
-    const scale = this.app.renderer.viewport.scale;
+    const scale = this.app.camera.viewport.scale;
     const candidates = [...this.shapes.values()].filter(
       (o) => o !== shape && !(exclude && exclude.has(o)),
     );
@@ -1605,86 +1139,6 @@ export class FlowChart {
     shape.x += r.dx;
     shape.y += r.dy;
     this.guides = r.guides;
-  }
-
-  // 按手柄方位应用缩放：对侧边/对角锚定，尺寸钳制到 MIN_SIZE
-  private applyResize(
-    s: Extract<Session, { kind: "resize" }>,
-    dx: number,
-    dy: number,
-  ) {
-    const o = s.origin;
-    let { x, y, width: w, height: h } = o;
-    if (s.handle.includes("e")) w = o.width + dx;
-    if (s.handle.includes("s")) h = o.height + dy;
-    if (s.handle.includes("w")) w = o.width - dx;
-    if (s.handle.includes("n")) h = o.height - dy;
-    if (s.handle.length === 2) {
-      // 角手柄：锁定比例等比缩放，取相对变化更大的轴作为统一缩放比
-      // （边手柄仅单轴生效，仍可自由改变比例）
-      const r = Math.max(
-        Math.abs(w / o.width) >= Math.abs(h / o.height)
-          ? w / o.width
-          : h / o.height,
-        MIN_SIZE / o.width,
-        MIN_SIZE / o.height,
-      );
-      w = o.width * r;
-      h = o.height * r;
-    } else {
-      w = Math.max(MIN_SIZE, w);
-      h = Math.max(MIN_SIZE, h);
-    }
-    // 锚点：拖拽方向的对侧边/角固定不动
-    if (s.handle.includes("w")) x = o.x + o.width - w;
-    if (s.handle.includes("n")) y = o.y + o.height - h;
-    s.shape.x = x;
-    s.shape.y = y;
-    s.shape.width = w;
-    s.shape.height = h;
-    s.shape.layout();
-  }
-
-  // 多选组合缩放：以组合 bounds 的对侧为锚点，按整体缩放比等比变换每个成员
-  // 的位置与尺寸；按组内最小形状钳制缩放比，保证任何成员不低于 MIN_SIZE
-  private applyGroupResize(
-    s: Extract<Session, { kind: "group-resize" }>,
-    dx: number,
-    dy: number,
-  ) {
-    const o = s.origin;
-    let sx = 1;
-    let sy = 1;
-    if (s.handle.includes("e")) sx = (o.width + dx) / o.width;
-    if (s.handle.includes("w")) sx = (o.width - dx) / o.width;
-    if (s.handle.includes("s")) sy = (o.height + dy) / o.height;
-    if (s.handle.includes("n")) sy = (o.height - dy) / o.height;
-    const minW = Math.min(...s.origins.map((g) => g.width));
-    const minH = Math.min(...s.origins.map((g) => g.height));
-    if (s.handle.length === 2) {
-      // 角手柄：锁定比例等比缩放，取相对变化更大的轴作为统一缩放比
-      // （边手柄仅单轴生效，仍可自由改变比例）
-      const r = Math.max(
-        Math.abs(sx) >= Math.abs(sy) ? sx : sy,
-        MIN_SIZE / minW,
-        MIN_SIZE / minH,
-      );
-      sx = r;
-      sy = r;
-    } else {
-      sx = Math.max(sx, MIN_SIZE / minW);
-      sy = Math.max(sy, MIN_SIZE / minH);
-    }
-    // 锚点：拖拽方向的对侧边/角固定不动
-    const ax = s.handle.includes("w") ? o.x + o.width : o.x;
-    const ay = s.handle.includes("n") ? o.y + o.height : o.y;
-    for (const g of s.origins) {
-      g.shape.x = ax + (g.x - ax) * sx;
-      g.shape.y = ay + (g.y - ay) * sy;
-      g.shape.width = g.width * sx;
-      g.shape.height = g.height * sy;
-      g.shape.layout();
-    }
   }
 
   private onUp(e: MouseEvent) {
@@ -1709,21 +1163,7 @@ export class FlowChart {
           y: m.shape.y,
         }));
         if (before.some((m) => m.shape.x !== m.x || m.shape.y !== m.y)) {
-          this.history.record({
-            type: "move",
-            redo: () => {
-              for (const m of after) {
-                m.shape.x = m.x;
-                m.shape.y = m.y;
-              }
-            },
-            undo: () => {
-              for (const m of before) {
-                m.shape.x = m.x;
-                m.shape.y = m.y;
-              }
-            },
-          });
+          this.history.record(moveCommand(before, after));
         }
         this.onChange?.("move");
       } else if (s.press && Math.hypot(e.clientX - s.press.x, e.clientY - s.press.y) <= CLICK_MOVE_TOLERANCE)
@@ -1739,24 +1179,18 @@ export class FlowChart {
         s.shape.height !== o.height
       ) {
         // 缩放记录为可逆命令（变更已发生）：before/after 各定格一份 bounds
-        const before = { x: o.x, y: o.y, width: o.width, height: o.height };
-        const after = {
-          x: s.shape.x,
-          y: s.shape.y,
-          width: s.shape.width,
-          height: s.shape.height,
-        };
-        this.history.record({
-          type: "resize",
-          redo: () => {
-            Object.assign(s.shape, after);
-            s.shape.layout();
-          },
-          undo: () => {
-            Object.assign(s.shape, before);
-            s.shape.layout();
-          },
-        });
+        this.history.record(
+          resizeCommand(
+            s.shape,
+            { x: o.x, y: o.y, width: o.width, height: o.height },
+            {
+              x: s.shape.x,
+              y: s.shape.y,
+              width: s.shape.width,
+              height: s.shape.height,
+            },
+          ),
+        );
         this.onChange?.("resize");
       }
     } else if (s.kind === "group-resize") {
@@ -1784,31 +1218,7 @@ export class FlowChart {
           width: g.shape.width,
           height: g.shape.height,
         }));
-        this.history.record({
-          type: "resize",
-          redo: () => {
-            for (const m of after) {
-              Object.assign(m.shape, {
-                x: m.x,
-                y: m.y,
-                width: m.width,
-                height: m.height,
-              });
-              m.shape.layout();
-            }
-          },
-          undo: () => {
-            for (const m of before) {
-              Object.assign(m.shape, {
-                x: m.x,
-                y: m.y,
-                width: m.width,
-                height: m.height,
-              });
-              m.shape.layout();
-            }
-          },
-        });
+        this.history.record(groupResizeCommand(before, after));
         this.onChange?.("resize");
       }
     } else if (s.kind === "edge-move") {
@@ -1820,7 +1230,8 @@ export class FlowChart {
       const snap = this.linkSnap;
       this.linkTarget = null;
       this.linkSnap = null;
-      const hit = target ?? this.hitShape(this.app.renderer.toWorld(e.clientX, e.clientY));
+      const hit =
+        target ?? hitShape(this.app.children, this.app.camera.toWorld(e.clientX, e.clientY));
       const cur = s.which === "from" ? s.edge.fromNode : s.edge.toNode;
       if (hit && !(hit === cur && !target)) {
         // 重接前定格原端（节点 + 端口方向），undo/redo 对称重接
@@ -1829,11 +1240,9 @@ export class FlowChart {
         s.edge.reattachEnd(s.which, hit, target && snap ? snap : undefined);
         const newNode = s.which === "from" ? s.edge.fromNode : s.edge.toNode;
         const newDir = s.which === "from" ? s.edge.fromDir : s.edge.toDir;
-        this.history.record({
-          type: "reconnect",
-          redo: () => s.edge.reattachEnd(s.which, newNode, newDir),
-          undo: () => s.edge.reattachEnd(s.which, oldNode, oldDir),
-        });
+        this.history.record(
+          reconnectCommand(s.edge, s.which, oldNode, oldDir, newNode, newDir),
+        );
         this.onChange?.("reconnect");
       }
       this.app.requestRender();
@@ -1846,7 +1255,7 @@ export class FlowChart {
       const snap = this.linkSnap;
       this.linkTarget = null;
       this.linkSnap = null;
-      const p = this.app.renderer.toWorld(e.clientX, e.clientY);
+      const p = this.app.camera.toWorld(e.clientX, e.clientY);
       // 未进入拖拽态（armed）即为纯点击端口：沿端口方向自动新建节点并连线
       if (!s.armed) {
         this.createNodeInDirection(s.source, s.sourceDir);
@@ -1856,7 +1265,7 @@ export class FlowChart {
           to: snap,
         });
       } else {
-        const hit = this.hitShape(p);
+        const hit = hitShape(this.app.children, p);
         if (hit && hit !== s.source) this.addEdgeBetween(s.source, hit, true);
       }
       this.app.requestRender();
@@ -1930,21 +1339,7 @@ export class FlowChart {
       s.x += dx;
       s.y += dy;
     }
-    this.history.record({
-      type: "move",
-      redo: () => {
-        for (const s of targets) {
-          s.x += dx;
-          s.y += dy;
-        }
-      },
-      undo: () => {
-        for (const m of before) {
-          m.shape.x = m.x;
-          m.shape.y = m.y;
-        }
-      },
-    });
+    this.history.record(nudgeCommand(targets, dx, dy, before));
     this.app.requestRender();
     this.onChange?.("move");
   }

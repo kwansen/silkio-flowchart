@@ -8,9 +8,18 @@
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
-  "devDependencies": {
+  "dependencies": {
+    "@silker/core": "workspace:*",
     "@silker/core-viewport": "workspace:*",
     "@silker/flowchart": "workspace:*",
+    "@silker/plugin-command": "workspace:*",
+    "@silker/plugin-exporter": "workspace:*",
+    "@silker/plugin-history": "workspace:*",
+    "@silker/plugin-interaction": "workspace:*",
+    "@silker/plugin-selection": "workspace:*",
+    "@silker/plugin-text-editor": "workspace:*"
+  },
+  "devDependencies": {
     "typescript": "~6.0.2",
     "vite": "^8.2.0"
   }

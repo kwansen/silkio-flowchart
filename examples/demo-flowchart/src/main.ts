@@ -1,8 +1,17 @@
 // 入口：挂载 canvas 并渲染一张示例流程图
+// 显式装配示例：宿主自建 App 并按需安装官方外部插件（与 FlowChart 便捷模式
+// 装配的集合一致），再交给 FlowChart 复用——应用层可自由增减/替换插件
+import { App } from "@silker/core";
+import { History } from "@silker/plugin-history";
+import { Command } from "@silker/plugin-command";
+import { Viewport, VIEWPORT_CAPABILITY } from "@silker/core-viewport";
+import { Pointer } from "@silker/plugin-interaction";
+import { Exporter } from "@silker/plugin-exporter";
+import { TextEditor } from "@silker/plugin-text-editor";
+import { Selection } from "@silker/plugin-selection";
 import { FlowChart, Shape, SHAPE_REGISTRY_CAPABILITY } from "@silker/flowchart";
 import type { Plugin, ShapeOptions, ShapeStyle } from "@silker/flowchart";
-import { VIEWPORT_CAPABILITY } from "@silker/core-viewport";
-import type { FlowData, ShapeKind } from "@silker/flowchart";
+import type { FlowData, ShapeKind, FlowEdge } from "@silker/flowchart";
 
 // ── 第三方形状扩展示例：便签（折角矩形，经形状注册表插件注册）──
 // 只依赖 flowchart 导出的 Shape 基类与能力键，不依赖 FlowChart 内部实现
@@ -72,8 +81,20 @@ const data: FlowData = {
 
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 
+// 显式装配：自建 App 并安装官方外部插件（顺序与便捷模式一致），
+// FlowChart 按 ability 键复用这些能力，只补齐自有的形状/吸附/边路由插件
+const app = new App(canvas);
+app.use(new History()); // 撤销/重做命令栈
+app.use(new Command()); // 命令注册与默认键位
+app.use(new Viewport()); // 视口（平移/缩放/适应视图）
+app.use(new Pointer()); // 指针事件绑定与坐标换算
+app.use(new Exporter()); // 画布导出
+app.use(new TextEditor()); // 节点文本编辑
+app.use(new Selection<Shape | FlowEdge>()); // 单选/多选/框选模型
+
 const flowchart = new FlowChart({
   canvas,
+  app,
   data,
   // 第三方形状插件经 plugins 选项装配（在初始数据 load 之前安装）
   plugins: [noteShapes],
@@ -99,7 +120,7 @@ refreshToolbar();
 let addCount = 0;
 const addAtCenter = (shape: ShapeKind, text: string) => {
   const rect = canvas.getBoundingClientRect();
-  const { x: vx, y: vy, scale } = flowchart.app.renderer.viewport;
+  const { x: vx, y: vy, scale } = flowchart.app.camera.viewport;
   const offset = (addCount++ % 5) * 24 - 48;
   flowchart.addNode({
     shape,
