@@ -48,10 +48,9 @@ export function captureRemoval(
 }
 
 // 流程图模型：形状表与连线表的唯一属主，负责建载/增删/顶替/删除捕获恢复
-// 与 z 序维护（连线层在形状层之下、选中框覆盖层在最上层），不做命中与交互
+// 与 z 序维护（连线层在形状层之下；覆盖层置顶由 App.addOverlay 自动保持），不做命中与交互
 export class FlowModel {
-  // 选中框覆盖层引用（门面创建后注入）：初始 load 阶段尚未赋值（undefined），
-  // raiseOverlay 经 indexOf 对不在 children 中的覆盖层无操作（与拆分前一致）
+  // 选中框覆盖层引用（门面创建后注入）：raiseEdgeTop 以它为连线层上界
   overlay!: Node;
   shapes = new Map<string, Shape>();
   edges: FlowEdge[] = [];
@@ -93,12 +92,6 @@ export class FlowModel {
   registerShape(shape: Shape) {
     this.shapes.set(shape.id as string, shape);
     this.deps.app.add(shape);
-    this.raiseOverlay();
-  }
-
-  // 保持选中框覆盖层在最上层（新增节点会追加到 children 末尾）
-  raiseOverlay() {
-    this.deps.app.reorder(this.overlay, this.deps.app.children.length);
   }
 
   // 新建连线：两节点间可存在多条连线，不做去重限制；
@@ -208,7 +201,6 @@ export class FlowModel {
       this.deps.app.add(b);
     }
     this.shapes.set(b.id as string, b);
-    this.raiseOverlay();
     this.deps.onSelect(b);
   }
 

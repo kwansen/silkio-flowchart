@@ -63,7 +63,10 @@ export class FlowChart {
   private hover!: HoverFeedback;
   // 交互会话控制器（会话/吸附/框选组合框状态属主）
   private interactions!: FlowInteractions;
+  // 选中框覆盖层（常驻顶层，App.addOverlay 注册）
   private overlay: SelectionOverlay;
+  // 构造期安装的插件（官方形状/吸附/边路由 + 应用层第三方）：destroy 时对称卸载
+  private scenePlugins: Plugin[] = [];
   private onChange?: (type: FlowChangeType) => void;
   // 命令模式历史记录：实现在 @silker/plugin-history，构造器内安装插件后按能力键消费；
   // 各变更入口把"改模型"抽成可逆命令入栈，undo/redo 时重放/逆放
@@ -94,11 +97,14 @@ export class FlowChart {
     this.history = this.app.require(HISTORY_CAPABILITY);
     // 安装官方形状/吸附/边路由插件（自注册各自能力），再装配应用层传入的第三方
     // 插件（可注册/覆盖形状、同名覆盖吸附策略与边路由，初始数据 load 前生效）；
-    // 此后仅按能力键消费
-    this.app.use(new BuiltinShapes());
-    this.app.use(new BuiltinSnap());
-    this.app.use(new BuiltinEdgeRouter());
-    for (const p of options.plugins ?? []) this.app.use(p);
+    // 此后仅按能力键消费。安装清单留存，destroy 时对称卸载
+    this.scenePlugins = [
+      new BuiltinShapes(),
+      new BuiltinSnap(),
+      new BuiltinEdgeRouter(),
+      ...(options.plugins ?? []),
+    ];
+    for (const p of this.scenePlugins) this.app.use(p);
     this.registry = this.app.require(SHAPE_REGISTRY_CAPABILITY);
     this.snapper = this.app.require(SNAP_CAPABILITY);
     this.router = this.app.require(EDGE_ROUTER_CAPABILITY);
@@ -194,7 +200,8 @@ export class FlowChart {
       };
     });
     this.model.overlay = this.overlay;
-    this.app.add(this.overlay);
+    // 选中框覆盖层注册为常驻顶层：新增形状/连线等结构变更由 App 自动保持其置顶
+    this.app.addOverlay(this.overlay);
     this.cleanups.push(this.interactions.bind(options.canvas));
   }
 
@@ -413,10 +420,31 @@ export class FlowChart {
     return this.history.canRedo;
   }
 
-  // 卸载事件监听（页面级销毁用）
+  // 完整拆卸（幂等，页面级销毁或显式装配下重建场景用）：
+  // 1) 撤销交互监听；2) 复位接线在宿主插件上的场景回调（编辑器/选中可能为
+  //    显式装配的宿主所有，避免已销毁门面被插件回调持有）；
+  // 3) 注销场景命令（键位随命令一并移除）并复位分发守卫；
+  // 4) 移除覆盖层节点（常驻置顶注册随之注销）；
+  // 5) 卸载构造期安装的插件（能力注册表沿 previous 链撤销/恢复）。
+  // 宿主自建的 App 与官方插件（显式装配）不受影响，可继续复用
   destroy() {
     this.cleanups.forEach((fn) => fn());
     this.cleanups = [];
+    this.editor.onInput = undefined;
+    this.editor.onEditEnd = undefined;
+    // 结束进行中的编辑会话（回调已复位，stop 触发的 onEditEnd 无副作用）
+    this.editor.stop();
+    this.sel.hitRect = () => [];
+    this.sel.onMarqueeMove = null;
+    this.sel.onMarqueeEnd = null;
+    const commands = this.app.require(COMMAND_CAPABILITY);
+    for (const id of ["flowchart.undo", "flowchart.redo", "flowchart.delete"]) {
+      commands.unregister(id);
+    }
+    commands.guard = null;
+    this.app.remove(this.overlay);
+    for (const p of this.scenePlugins) this.app.uninstall(p);
+    this.scenePlugins = [];
   }
   //#endregion
 
