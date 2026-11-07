@@ -1,6 +1,6 @@
 import { App } from "@silker/core";
-import type { HistoryCapability } from "@silker/plugin-history";
-import type { TextEditorCapability } from "@silker/plugin-text-editor";
+import type { HistoryCapability } from "@silker/core";
+import type { TextEditorCapability } from "@silker/core";
 import { textCommand } from "./commands";
 import type { Shape } from "./Shape";
 import type { FlowChangeType } from "./data";

@@ -1,7 +1,5 @@
-import { Edge } from '@silker/plugin-edge'
-import type { Bounds } from '@silker/core'
-import { pointsBounds } from '@silker/plugin-edge'
-import type { EdgePoint } from '@silker/plugin-edge'
+import { Edge, pointsBounds } from '@silker/core'
+import type { Bounds, EdgePoint } from '@silker/core'
 import type { EdgeRouterCapability } from './edge-router'
 import type { Shape } from './Shape'
 

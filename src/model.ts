@@ -1,5 +1,5 @@
 import { App, Node } from "@silker/core";
-import type { HistoryCapability, HistoryCommand } from "@silker/plugin-history";
+import type { HistoryCapability, HistoryCommand } from "@silker/core";
 import { FlowEdge } from "./FlowEdge";
 import type { FlowEdgeHints } from "./FlowEdge";
 import { Shape } from "./Shape";
