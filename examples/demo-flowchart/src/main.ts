@@ -5,7 +5,7 @@ import { App } from "@silker/core";
 import { History } from "@silker/plugin-history";
 import { Command } from "@silker/plugin-command";
 import { Viewport, VIEWPORT_CAPABILITY } from "@silker/core-viewport";
-import { Pointer } from "@silker/plugin-interaction";
+import { Clicker, Pointer } from "@silker/plugin-interaction";
 import { Exporter } from "@silker/plugin-exporter";
 import { TextEditor } from "@silker/plugin-text-editor";
 import { Selection } from "@silker/plugin-selection";
@@ -88,6 +88,7 @@ app.use(new History()); // 撤销/重做命令栈
 app.use(new Command()); // 命令注册与默认键位
 app.use(new Viewport()); // 视口（平移/缩放/适应视图）
 app.use(new Pointer()); // 指针事件绑定与坐标换算
+app.use(new Clicker()); // 点击分发（拖拽阈值判定/节点 onClick/空白点击）
 app.use(new Exporter()); // 画布导出
 app.use(new TextEditor()); // 节点文本编辑
 app.use(new Selection<Shape | FlowEdge>()); // 单选/多选/框选模型

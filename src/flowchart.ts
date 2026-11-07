@@ -12,6 +12,7 @@ import { Selection, selectionCapabilityKey } from "@silker/plugin-selection";
 import type { SelectionCapability } from "@silker/plugin-selection";
 import { Command, COMMAND_CAPABILITY } from "@silker/plugin-command";
 import { Pointer, POINTER_CAPABILITY } from "@silker/plugin-interaction";
+import { Clicker, CANVAS_CLICK_CAPABILITY } from "@silker/plugin-interaction";
 import { BuiltinShapes, SHAPE_REGISTRY_CAPABILITY } from "./shape-registry";
 import type { ShapeRegistryCapability } from "./shape-registry";
 import { Shape } from "./Shape";
@@ -184,6 +185,8 @@ export class FlowChart {
       this.app.use(new Viewport());
       // 安装指针交互插件：统一事件绑定/撤销与坐标换算（机制层），交互策略由本场景声明
       this.app.use(new Pointer());
+      // 安装点击分发插件：拖拽阈值判定、命中测试与节点/空白点击分发（机制层）
+      this.app.use(new Clicker());
       // 安装导出插件：install 时自注册导出能力，toImage 按能力键消费
       this.app.use(new Exporter());
     }
@@ -200,6 +203,9 @@ export class FlowChart {
     this.router = this.app.require(EDGE_ROUTER_CAPABILITY);
     // 显式声明对视口能力的依赖：命中换算与覆盖层绘制都按视口缩放反算
     this.app.require(VIEWPORT_CAPABILITY);
+    // 显式声明对点击分发能力的依赖：节点 onClick 与空白点击均由其分发
+    // （显式装配模式下由宿主负责安装 Clicker）
+    this.app.require(CANVAS_CLICK_CAPABILITY);
     // 撤销/重做/删除注册为命令并绑定默认键位，document keydown 由命令插件
     // 统一分发；应用层与第三方可按能力键复用命令或重绑键位
     bindFlowchartCommands(this.app.require(COMMAND_CAPABILITY), {
