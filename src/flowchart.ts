@@ -20,12 +20,14 @@ import {
   OPPOSITE_DIR,
   PORT_DIR_VEC,
   PORT_STUB,
-  renderEdgePreview,
 } from "./FlowEdge";
 import type { FlowEdgeHints, PortDir } from "./FlowEdge";
 import type { FlowChangeType, FlowData, ShapeKind } from "./data";
-import { computeSnap } from "./snap";
 import type { Bounds, SnapGuides } from "./snap";
+import { BuiltinSnap, SNAP_CAPABILITY } from "./snap-capability";
+import type { SnapCapability } from "./snap-capability";
+import { BuiltinEdgeRouter, EDGE_ROUTER_CAPABILITY } from "./edge-router";
+import type { EdgeRouterCapability } from "./edge-router";
 
 // 端口命中半径（世界坐标）
 const PORT_HIT_RADIUS = 10;
@@ -51,16 +53,16 @@ const LINK_SNAP_MARGIN = 16; // 吸附感应范围（屏幕像素）
 const CLICK_MOVE_TOLERANCE = 4; // 判定点击的最大位移（屏幕像素）
 const CLICK_CREATE_GAP = 80; // 新节点与源节点边缘的间距（世界坐标）
 
-// 节点拖拽对齐：左/中/右与上/中/下接近其他节点的对应边时吸附，并绘制对齐参考线
-const SNAP_TOLERANCE = 6; // 对齐吸附阈值（屏幕像素），过大会产生粘滞感
+// 节点拖拽吸附：对齐参考线颜色（吸附算法与容差在吸附能力实现内，此处只负责渲染）
 const ALIGN_COLOR = "#eea5ffff"; // 对齐参考线颜色
-const SPACING_TOLERANCE = 4; // 等间距吸附阈值（屏幕像素）
 
 // 缩放手柄方位：四角 + 四边
 type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
-// 连线拖拽预览：与正式连线同款式的正交折线 + 箭头（from 为固定端端口及其方向，
-// to 为光标或吸附端端口；toDir 随光标相对出口端口的位置实时变化）
+// 连线拖拽预览：与正式连线同款式的折线 + 箭头（from 为固定端端口及其方向，
+// to 为光标或吸附端端口；toDir 随光标相对出口端口的位置实时变化）。
+// 路由与渲染按能力键消费边路由能力（FlowChart 装配时注入）
+const LINK_PREVIEW_COLOR = "#3b82f6";
 class LinkPreview extends Node {
   from = { x: 0, y: 0 };
   to = { x: 0, y: 0 };
@@ -69,20 +71,23 @@ class LinkPreview extends Node {
   // 两端直段长度：源端在创建时按其 portStub 设置，目标端吸附时跟随目标节点
   fromStub = PORT_STUB;
   toStub = PORT_STUB;
+  router!: EdgeRouterCapability;
 
   render(ctx: CanvasRenderingContext2D) {
     ctx.save();
-    renderEdgePreview(
-      ctx,
-      FlowEdge.routeBetween(
-        this.from,
-        this.fromDir,
-        this.to,
-        this.toDir,
-        this.fromStub,
-        this.toStub,
-      ),
-    );
+    const pts = this.router.route({
+      from: this.from,
+      fromDir: this.fromDir,
+      to: this.to,
+      toDir: this.toDir,
+      fromStub: this.fromStub,
+      toStub: this.toStub,
+    });
+    this.router.render(ctx, pts, {
+      color: LINK_PREVIEW_COLOR,
+      lineWidth: 2,
+      cornerRadius: 8,
+    });
     ctx.restore();
   }
 
@@ -326,8 +331,9 @@ export interface FlowChartOptions {
   data: FlowData;
   // 数据变化回调：新增 / 删除 / 移动 / 连线 / 文本编辑结束，当前数据用 toJSON() 导出
   onChange?: (type: FlowChangeType) => void;
-  // 额外装配的插件（在官方形状插件之后、初始数据 load 之前安装）：
-  // 第三方形状插件经此注册自定义形状，使其在初始数据中即可用
+  // 额外装配的插件（在官方形状/吸附插件之后、初始数据 load 之前安装）：
+  // 第三方形状插件经此注册自定义形状，同名能力可覆盖官方吸附策略，
+  // 使其在初始数据中即可用
   plugins?: Plugin[];
 }
 
@@ -411,6 +417,12 @@ export class FlowChart {
   // 形状注册表（BuiltinShapes 插件 install 时注册，第三方形状插件可追加/覆盖条目）：
   // 按 kind 创建形状，注册表缺失属于装配错误（require 兜底），未知 kind 数据按降级跳过
   private registry!: ShapeRegistryCapability;
+  // 吸附能力（BuiltinSnap 插件 install 时注册，第三方吸附插件可同名覆盖）：
+  // 拖拽对齐/等间距吸附，契约输入载体与候选 bounds + 视口缩放，输出位移与参考线
+  private snapper!: SnapCapability;
+  // 边路由能力（BuiltinEdgeRouter 插件 install 时注册，第三方路由插件可同名覆盖）：
+  // 创建连线时注入每个 FlowEdge，路由与渲染均按契约消费
+  private router!: EdgeRouterCapability;
   // 编辑会话起点快照（形状引用与原文字符串，非整图快照）：startEdit 记录，
   // finishEdit 对比决定是否把文本变更记入历史
   private editingOld: { shape: Shape | null; text: string } = {
@@ -457,11 +469,16 @@ export class FlowChart {
     this.app.use(new Viewport());
     // 安装导出插件：install 时自注册导出能力，toImage 按能力键消费
     this.app.use(new Exporter());
-    // 安装官方形状插件（六种内置形状自注册注册表能力），再装配应用层传入的
-    // 第三方插件（可注册/覆盖形状，初始数据 load 前生效）；此后仅按能力键消费注册表
+    // 安装官方形状/吸附/边路由插件（自注册各自能力），再装配应用层传入的第三方
+    // 插件（可注册/覆盖形状、同名覆盖吸附策略与边路由，初始数据 load 前生效）；
+    // 此后仅按能力键消费
     this.app.use(new BuiltinShapes());
+    this.app.use(new BuiltinSnap());
+    this.app.use(new BuiltinEdgeRouter());
     for (const p of options.plugins ?? []) this.app.use(p);
     this.registry = this.app.require(SHAPE_REGISTRY_CAPABILITY);
+    this.snapper = this.app.require(SNAP_CAPABILITY);
+    this.router = this.app.require(EDGE_ROUTER_CAPABILITY);
     const editor = new TextEditor({
       // 输入实时同步：文本重测后重新居中（不改形状尺寸），覆盖层跟随新位置
       onInput: () => {
@@ -800,6 +817,7 @@ export class FlowChart {
     hints?: FlowEdgeHints,
   ): FlowEdge {
     const edge = new FlowEdge(from, to, hints);
+    edge.router = this.router;
     this.edges.push(edge);
     this.insertEdge(edge);
     if (notify) {
@@ -1227,6 +1245,7 @@ export class FlowChart {
         // 按下时不创建预览边（此刻无法区分点击/拖拽）：位移超过点击阈值
         // 进入拖拽连线时才插入预览并取消选中（见 onMove 的 armed 逻辑）
         const preview = new LinkPreview();
+        preview.router = this.router;
         preview.from = sel.portAt(dir);
         preview.fromDir = dir;
         preview.fromStub = sel.portStub(dir);
@@ -1573,16 +1592,17 @@ export class FlowChart {
   }
 
   // 节点拖拽吸附：候选参考目标 = 除被拖载体（单形状）与组内成员（组合拖拽）
-  // 之外的全部形状；吸附算法在 snap.ts 纯函数 computeSnap 中实现，
-  // 这里只负责按视口缩放折算容差、筛选候选、把位移写回载体
+  // 之外的全部形状；吸附算法按能力键消费（BuiltinSnap 官方实现，第三方可覆盖），
+  // 这里只负责筛选候选、回传迟滞状态、把位移写回载体
   private applySnap(shape: Bounds, exclude: Set<Shape> | null = null) {
     const scale = this.app.renderer.viewport.scale;
     const candidates = [...this.shapes.values()].filter(
       (o) => o !== shape && !(exclude && exclude.has(o)),
     );
-    const r = computeSnap(shape, candidates, {
-      snapTol: SNAP_TOLERANCE / scale,
-      spacingTol: SPACING_TOLERANCE / scale,
+    const r = this.snapper.snap({
+      box: shape,
+      candidates,
+      scale,
       prev: this.snapPrev,
     });
     this.snapPrev = { x: r.snappedX, y: r.snappedY };
@@ -1870,6 +1890,11 @@ export class FlowChart {
     }
     // 节点注册与连线创建组合为一条原子命令（不预先注册，避免 exec 重放时重复入列）：
     // undo 逆序回退——先摘连线再摘节点，整体回到创建前；redo 顺序重建
+    const edge = new FlowEdge(source, shape, {
+      from: dir,
+      to: OPPOSITE_DIR[dir],
+    });
+    edge.router = this.router;
     this.history.exec(
       compose(
         "add",
@@ -1877,12 +1902,7 @@ export class FlowChart {
           redo: () => this.registerShape(shape),
           undo: () => this.removeShape(shape),
         },
-        this.edgeAddRemove(
-          new FlowEdge(source, shape, {
-            from: dir,
-            to: OPPOSITE_DIR[dir],
-          }),
-        ),
+        this.edgeAddRemove(edge),
       ),
     );
     this.select(shape);

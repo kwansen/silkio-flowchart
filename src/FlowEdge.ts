@@ -2,6 +2,7 @@ import { Edge } from '@silker/plugin-edge'
 import type { Bounds } from '@silker/core'
 import { pointsBounds } from '@silker/plugin-edge'
 import type { EdgePoint } from '@silker/plugin-edge'
+import type { EdgeRouterCapability } from './edge-router'
 import type { Shape } from './Shape'
 
 // 端口方向（四边中点）
@@ -37,6 +38,9 @@ export class FlowEdge extends Edge {
   hovered = false
   // 最近一次路由的折线点（渲染时更新，供命中检测使用）
   points: EdgePoint[] = []
+  // 边路由能力（FlowChart 装配时注入，第三方路由插件经能力键覆盖）：
+  // null 时回退到内置正交路由（本类的静态方法与渲染辅助），保持独立可用
+  router: EdgeRouterCapability | null = null
 
   constructor(from: Shape, to: Shape, hints: FlowEdgeHints = {}) {
     super({ color: '#94a3b8', lineWidth: 2, cornerRadius: 8 })
@@ -81,13 +85,22 @@ export class FlowEdge extends Edge {
 
   render(ctx: CanvasRenderingContext2D) {
     this.update()
-    const pts = this.route()
+    const pts = this.points
     // 拖拽端点期间不显示高亮，保持常态线色；选中 > 悬浮 > 默认
     const color = this.selected && !this.dragWhich
       ? SELECT_COLOR
       : this.hovered && !this.selected
         ? HOVER_COLOR
         : this.color
+    // 路由能力被覆盖时由实现绘制（含箭头等自带装饰）；否则走内置正交渲染
+    if (this.router) {
+      this.router.render(ctx, pts, {
+        color,
+        lineWidth: this.lineWidth,
+        cornerRadius: this.cornerRadius,
+      })
+      return
+    }
     // 线体末端回缩一个箭头长度再绘制，避免线头从三角箭头下方露出
     renderOrthoPolyline(ctx, trimEdgeEnd(pts), color, this.lineWidth, this.cornerRadius)
     drawEdgeArrow(ctx, pts, color)
@@ -115,24 +128,41 @@ export class FlowEdge extends Edge {
     return pointsBounds(this.route(), this.lineWidth / 2, this.getWorldTransform())
   }
 
-  // 生成正交路径点（相邻重复点已剔除）。首段沿源端口外法向、末段沿目标端口
-  // 外法向反向进入，方向锁定；中段按方向组合与相对位置选 Z 形（顺畅）或
-  // L 形 / S 形（绕行，无折返）。两端直段长度取自各自节点的 portStub
+  // 生成路径点（相邻重复点已剔除）。拖拽端点时该端以虚拟端口（dragPoint/dragDir，
+  // 直段取默认 PORT_STUB）参与路由；路由委托给注入的路由能力，未注入时走
+  // 内置正交路由。首段沿源端口外法向、末段沿目标端口外法向反向进入，方向锁定
   protected route(): EdgePoint[] {
+    let s: EdgePoint
+    let sd: PortDir
+    let ss: number
+    let t: EdgePoint
+    let td: PortDir
+    let ts: number
     if (this.dragWhich === 'from') {
-      return FlowEdge.routeBetween(this.dragPoint, this.dragDir, this.toNode.portAt(this.toDir), this.toDir, PORT_STUB, this.toNode.portStub(this.toDir))
+      s = this.dragPoint
+      sd = this.dragDir
+      ss = PORT_STUB
+      t = this.toNode.portAt(this.toDir)
+      td = this.toDir
+      ts = this.toNode.portStub(this.toDir)
+    } else if (this.dragWhich === 'to') {
+      s = this.fromNode.portAt(this.fromDir)
+      sd = this.fromDir
+      ss = this.fromNode.portStub(this.fromDir)
+      t = this.dragPoint
+      td = this.dragDir
+      ts = PORT_STUB
+    } else {
+      s = this.fromNode.portAt(this.fromDir)
+      sd = this.fromDir
+      ss = this.fromNode.portStub(this.fromDir)
+      t = this.toNode.portAt(this.toDir)
+      td = this.toDir
+      ts = this.toNode.portStub(this.toDir)
     }
-    if (this.dragWhich === 'to') {
-      return FlowEdge.routeBetween(this.fromNode.portAt(this.fromDir), this.fromDir, this.dragPoint, this.dragDir, this.fromNode.portStub(this.fromDir), PORT_STUB)
-    }
-    return FlowEdge.routeBetween(
-      this.fromNode.portAt(this.fromDir),
-      this.fromDir,
-      this.toNode.portAt(this.toDir),
-      this.toDir,
-      this.fromNode.portStub(this.fromDir),
-      this.toNode.portStub(this.toDir),
-    )
+    return this.router
+      ? this.router.route({ from: s, fromDir: sd, to: t, toDir: td, fromStub: ss, toStub: ts })
+      : FlowEdge.routeBetween(s, sd, t, td, ss, ts)
   }
 
   // 两端口间的正交路由：实例连线与拖拽预览共用。
@@ -205,7 +235,8 @@ export class FlowEdge extends Edge {
 
 // 正交折线渲染：中间每个拐点用 arcTo 做四分之一圆弧（半径 cornerRadius，
 // 自动收缩到相邻边长一半以内），其余为水平/垂直直线段
-function renderOrthoPolyline(ctx: CanvasRenderingContext2D, pts: EdgePoint[], color: string, lineWidth: number, cornerRadius: number) {
+//（导出供官方边路由实现 BuiltinEdgeRouter 复用）
+export function renderOrthoPolyline(ctx: CanvasRenderingContext2D, pts: EdgePoint[], color: string, lineWidth: number, cornerRadius: number) {
   const r = cornerRadius
   ctx.strokeStyle = color
   ctx.lineWidth = lineWidth
@@ -232,7 +263,8 @@ function renderOrthoPolyline(ctx: CanvasRenderingContext2D, pts: EdgePoint[], co
 }
 
 // 实心三角箭头：平移到终点并按最后一段直线方向旋转后绘制
-function drawEdgeArrow(ctx: CanvasRenderingContext2D, pts: EdgePoint[], color: string) {
+//（导出供官方边路由实现 BuiltinEdgeRouter 复用）
+export function drawEdgeArrow(ctx: CanvasRenderingContext2D, pts: EdgePoint[], color: string) {
   const to = pts[pts.length - 1]
   const prev = pts[pts.length - 2]
   if (prev.x === to.x && prev.y === to.y) return
@@ -281,7 +313,8 @@ export const OPPOSITE_DIR: Record<PortDir, PortDir> = {
 }
 
 // 返回末端沿最后一段回缩 ARROW_LEN 的折线副本（回缩量不超过该段长度）
-function trimEdgeEnd(pts: EdgePoint[]): EdgePoint[] {
+//（导出供官方边路由实现 BuiltinEdgeRouter 复用）
+export function trimEdgeEnd(pts: EdgePoint[]): EdgePoint[] {
   const n = pts.length
   if (n < 2) return pts
   const to = pts[n - 1]
