@@ -1,7 +1,6 @@
 import { Shape } from "./Shape";
 import type { ShapeOptions } from "./Shape";
 import { PORT_STUB } from "./FlowEdge";
-import type { ShapeKind } from "./data";
 
 // 圆角矩形（流程步骤）：默认矩形命中
 export class RectShape extends Shape {
@@ -336,26 +335,5 @@ export class Database extends Shape {
     ctx.lineTo(w, ry);
     // 顶帽：经最高点的半椭圆（右 → 上 → 左）闭合轮廓
     ctx.ellipse(w / 2, ry, w / 2, ry, 0, 0, Math.PI, true);
-  }
-}
-
-// 按类型创建形状（数据模型 ShapeKind → 渲染模型实例）
-export function createShape(
-  kind: ShapeKind,
-  options: ShapeOptions = {},
-): Shape {
-  switch (kind) {
-    case "diamond":
-      return new Diamond(options);
-    case "ellipse":
-      return new EllipseShape(options);
-    case "parallelogram":
-      return new Parallelogram(options);
-    case "hexagon":
-      return new Hexagon(options);
-    case "database":
-      return new Database(options);
-    default:
-      return new RectShape(options);
   }
 }

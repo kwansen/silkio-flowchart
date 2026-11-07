@@ -1,4 +1,5 @@
 import { App, Node } from "@silker/core";
+import type { Plugin } from "@silker/core";
 import { Viewport } from "@silker/core-viewport";
 import { TextEditor } from "@silker/plugin-text-editor";
 import type { TextEditorCapability } from "@silker/plugin-text-editor";
@@ -10,8 +11,10 @@ import { compose } from "@silker/plugin-history";
 import { Selection, selectionCapabilityKey } from "@silker/plugin-selection";
 import type { SelectionCapability } from "@silker/plugin-selection";
 import { Command, COMMAND_CAPABILITY } from "@silker/plugin-command";
-import { createShape } from "./shapes";
+import { BuiltinShapes, SHAPE_REGISTRY_CAPABILITY } from "./shape-registry";
+import type { ShapeRegistryCapability } from "./shape-registry";
 import { Shape } from "./Shape";
+import type { ShapeOptions } from "./Shape";
 import {
   FlowEdge,
   OPPOSITE_DIR,
@@ -323,6 +326,9 @@ export interface FlowChartOptions {
   data: FlowData;
   // 数据变化回调：新增 / 删除 / 移动 / 连线 / 文本编辑结束，当前数据用 toJSON() 导出
   onChange?: (type: FlowChangeType) => void;
+  // 额外装配的插件（在官方形状插件之后、初始数据 load 之前安装）：
+  // 第三方形状插件经此注册自定义形状，使其在初始数据中即可用
+  plugins?: Plugin[];
 }
 
 // 交互会话：节点拖拽移动（多选时为组合移动）/ 拖拽缩放 / 框选组合缩放
@@ -402,6 +408,9 @@ export class FlowChart {
   // 命令模式历史记录：实现在 @silker/plugin-history，构造器内安装插件后按能力键消费；
   // 各变更入口把"改模型"抽成可逆命令入栈，undo/redo 时重放/逆放
   private history!: HistoryCapability;
+  // 形状注册表（BuiltinShapes 插件 install 时注册，第三方形状插件可追加/覆盖条目）：
+  // 按 kind 创建形状，注册表缺失属于装配错误（require 兜底），未知 kind 数据按降级跳过
+  private registry!: ShapeRegistryCapability;
   // 编辑会话起点快照（形状引用与原文字符串，非整图快照）：startEdit 记录，
   // finishEdit 对比决定是否把文本变更记入历史
   private editingOld: { shape: Shape | null; text: string } = {
@@ -448,6 +457,11 @@ export class FlowChart {
     this.app.use(new Viewport());
     // 安装导出插件：install 时自注册导出能力，toImage 按能力键消费
     this.app.use(new Exporter());
+    // 安装官方形状插件（六种内置形状自注册注册表能力），再装配应用层传入的
+    // 第三方插件（可注册/覆盖形状，初始数据 load 前生效）；此后仅按能力键消费注册表
+    this.app.use(new BuiltinShapes());
+    for (const p of options.plugins ?? []) this.app.use(p);
+    this.registry = this.app.require(SHAPE_REGISTRY_CAPABILITY);
     const editor = new TextEditor({
       // 输入实时同步：文本重测后重新居中（不改形状尺寸），覆盖层跟随新位置
       onInput: () => {
@@ -531,7 +545,7 @@ export class FlowChart {
     width?: number;
     height?: number;
   }) {
-    const shape = createShape(input.shape, {
+    const shape = this.createShape(input.shape, {
       x: input.x,
       y: input.y,
       width: input.width,
@@ -616,7 +630,7 @@ export class FlowChart {
   replaceSelected(kind: ShapeKind) {
     const old = this.selShape;
     if (!old || old.kind === kind) return;
-    const shape = createShape(kind, {
+    const shape = this.createShape(kind, {
       id: old.id as string,
       x: old.x,
       y: old.y,
@@ -729,7 +743,9 @@ export class FlowChart {
   //#region 模型维护
   private load(data: FlowData) {
     for (const n of data.nodes) {
-      const shape = createShape(n.shape, {
+      // 数据中的 kind 可能来自未装配的第三方形状插件（Extension 缺失允许降级）：
+      // 跳过该节点，其关联连线因端点缺失在下方一并跳过
+      const shape = this.registry.create(n.shape, {
         id: n.id,
         x: n.x,
         y: n.y,
@@ -737,6 +753,7 @@ export class FlowChart {
         height: n.height,
         text: n.text,
       });
+      if (!shape) continue;
       this.registerShape(shape);
     }
     for (const e of data.edges) {
@@ -746,6 +763,14 @@ export class FlowChart {
         this.addEdgeBetween(from, to, false, { from: e.fromDir, to: e.toDir });
     }
     this.app.requestRender();
+  }
+
+  // 按注册表创建形状：编程路径（addNode/replaceSelected/快速建节点）的 kind
+  // 来自类型化 API 或既有节点，未注册属于编程错误，fail fast
+  private createShape(kind: ShapeKind, options: ShapeOptions): Shape {
+    const shape = this.registry.create(kind, options);
+    if (!shape) throw new Error(`Unknown shape kind: "${kind}"`);
+    return shape;
   }
 
   private registerShape(shape: Shape) {
@@ -1826,7 +1851,7 @@ export class FlowChart {
   //（边缘间距 CLICK_CREATE_GAP，垂直于方向的轴线与源节点中心对齐），
   // 新节点进入选中态
   private createNodeInDirection(source: Shape, dir: PortDir) {
-    const shape = createShape(source.kind, {
+    const shape = this.createShape(source.kind, {
       width: source.width,
       height: source.height,
     });

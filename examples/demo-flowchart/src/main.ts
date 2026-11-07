@@ -1,7 +1,53 @@
 // 入口：挂载 canvas 并渲染一张示例流程图
-import { FlowChart } from "@silker/flowchart";
+import { FlowChart, Shape, SHAPE_REGISTRY_CAPABILITY } from "@silker/flowchart";
+import type { Plugin, ShapeOptions, ShapeStyle } from "@silker/flowchart";
 import { VIEWPORT_CAPABILITY } from "@silker/core-viewport";
 import type { FlowData, ShapeKind } from "@silker/flowchart";
+
+// ── 第三方形状扩展示例：便签（折角矩形，经形状注册表插件注册）──
+// 只依赖 flowchart 导出的 Shape 基类与能力键，不依赖 FlowChart 内部实现
+class NoteShape extends Shape {
+  constructor(options: ShapeOptions = {}) {
+    super("note", { width: 160, height: 99 }, {
+      ...options,
+      style: { fill: "#fef9c3", stroke: "#ca8a04", ...options.style } as Partial<ShapeStyle>,
+    });
+  }
+
+  // 内接矩形近似（折角只占右上角一小块）
+  protected get textFit() {
+    return 1.15;
+  }
+
+  protected boundaryT(dx: number, dy: number) {
+    const tx = dx === 0 ? Infinity : this.width / 2 / Math.abs(dx);
+    const ty = dy === 0 ? Infinity : this.height / 2 / Math.abs(dy);
+    return Math.min(tx, ty);
+  }
+
+  protected contains(x: number, y: number) {
+    return x >= 0 && x <= this.width && y >= 0 && y <= this.height;
+  }
+
+  protected drawPath(ctx: CanvasRenderingContext2D) {
+    const fold = 18;
+    ctx.moveTo(0, 0);
+    ctx.lineTo(this.width - fold, 0);
+    ctx.lineTo(this.width, fold);
+    ctx.lineTo(this.width, this.height);
+    ctx.lineTo(0, this.height);
+    ctx.closePath();
+  }
+}
+
+// 第三方形状插件：install 期间经能力键向注册表追加自定义 kind
+const noteShapes: Plugin = {
+  install(app) {
+    app
+      .require(SHAPE_REGISTRY_CAPABILITY)
+      .register("note", (o) => new NoteShape(o), { label: "便签" });
+  },
+};
 
 // 示例数据：开始 → 处理 → 判断 →（通过/驳回）两条分支
 const data: FlowData = {
@@ -11,6 +57,8 @@ const data: FlowData = {
     { id: "check", shape: "diamond", x: 560, y: 220, text: "校验通过？" },
     { id: "ok", shape: "ellipse", x: 840, y: 100, text: "返回成功" },
     { id: "retry", shape: "rect", x: 840, y: 330, text: "返回错误" },
+    // 第三方形状（note 插件经 plugins 选项装配后，初始数据即可用）
+    { id: "note1", shape: "note", x: 300, y: 420, text: "自定义形状：便签" },
   ],
   edges: [
     { from: "start", to: "handle" },
@@ -27,6 +75,8 @@ const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const flowchart = new FlowChart({
   canvas,
   data,
+  // 第三方形状插件经 plugins 选项装配（在初始数据 load 之前安装）
+  plugins: [noteShapes],
   // 数据变化（新增/删除/移动/连线/编辑）时打印当前数据 JSON
   onChange: (type) => {
     console.log(`[FlowChart] ${type}`, JSON.stringify(flowchart.toJSON()));
@@ -76,6 +126,9 @@ document
 document
   .getElementById("add-database")!
   .addEventListener("click", () => addAtCenter("database", "存储数据"));
+document
+  .getElementById("add-note")!
+  .addEventListener("click", () => addAtCenter("note", "便签"));
 
 document
   .getElementById("delete-btn")!
@@ -100,6 +153,9 @@ document
 document
   .getElementById("to-database")!
   .addEventListener("click", () => flowchart.replaceSelected("database"));
+document
+  .getElementById("to-note")!
+  .addEventListener("click", () => flowchart.replaceSelected("note"));
 
 // 适应视图：按全部节点包围盒拟合视口（Viewport 插件的 fit）
 document.getElementById("fit-btn")!.addEventListener("click", () => {
