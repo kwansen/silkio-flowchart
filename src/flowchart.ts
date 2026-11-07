@@ -9,6 +9,7 @@ import type { HistoryCapability, HistoryCommand } from "@silker/plugin-history";
 import { compose } from "@silker/plugin-history";
 import { Selection, selectionCapabilityKey } from "@silker/plugin-selection";
 import type { SelectionCapability } from "@silker/plugin-selection";
+import { Command, COMMAND_CAPABILITY } from "@silker/plugin-command";
 import { createShape } from "./shapes";
 import { Shape } from "./Shape";
 import {
@@ -416,6 +417,34 @@ export class FlowChart {
     // 历史能力，各变更入口按能力键消费（只认能力名与契约，不认插件实例）
     this.app.use(new History());
     this.history = this.app.require(HISTORY_CAPABILITY);
+    // 安装命令与键位插件：撤销/重做/删除注册为命令并绑定默认键位，document keydown
+    // 由插件统一分发；应用层与第三方可按能力键复用命令或重绑键位。
+    // install 时自注册命令能力，此后仅按能力键消费
+    this.app.use(new Command());
+    const commands = this.app.require(COMMAND_CAPABILITY);
+    // 分发守卫与 onKeyDown 同款：编辑或覆盖层持焦时按键属于输入，交由编辑器处理
+    commands.guard = (e) => !this.editing && !this.editor.hasFocus();
+    commands.register({
+      id: "flowchart.undo",
+      title: "撤销",
+      run: () => this.undo(),
+    });
+    commands.register({
+      id: "flowchart.redo",
+      title: "重做",
+      run: () => this.redo(),
+    });
+    commands.register({
+      id: "flowchart.delete",
+      title: "删除选中",
+      enabled: () => this.sel.items.length > 0,
+      run: () => this.deleteSelected(),
+    });
+    commands.bind("mod+z", "flowchart.undo");
+    commands.bind("mod+shift+z", "flowchart.redo");
+    commands.bind("mod+y", "flowchart.redo");
+    commands.bind("delete", "flowchart.delete");
+    commands.bind("backspace", "flowchart.delete");
     this.app.use(new Viewport());
     // 安装导出插件：install 时自注册导出能力，toImage 按能力键消费
     this.app.use(new Exporter());
@@ -1838,29 +1867,8 @@ export class FlowChart {
   private onKeyDown(e: KeyboardEvent) {
     // 覆盖层持有焦点时按键属于输入，交由编辑器处理
     if (this.editing || this.editor.hasFocus()) return;
-    // Ctrl/Cmd+Z 撤销、Ctrl+Shift+Z / Ctrl+Y 重做（编辑与拖拽会话中不响应，
-    // undo/redo 内部有同款守卫）
-    if ((e.ctrlKey || e.metaKey) && !e.altKey) {
-      const k = e.key.toLowerCase();
-      if (k === "z") {
-        e.preventDefault();
-        if (e.shiftKey) this.redo();
-        else this.undo();
-        return;
-      }
-      if (k === "y") {
-        e.preventDefault();
-        this.redo();
-        return;
-      }
-    }
-    // Delete/Backspace：删除选中
-    if (e.key === "Delete" || e.key === "Backspace") {
-      if (!this.sel.items.length) return;
-      e.preventDefault();
-      this.deleteSelected();
-      return;
-    }
+    // 撤销/重做/删除已注册为命令并绑定键位（构造器），由命令插件统一分发；
+    // 此处只处理领域语义按键（方向键微移选中节点）
     // 方向键：微移选中节点（Shift 加速），连线不参与移动
     const dir = {
       ArrowLeft: [-1, 0],

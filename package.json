@@ -20,7 +20,8 @@
     "@silker/plugin-text-editor": "workspace:*",
     "@silker/plugin-exporter": "workspace:*",
     "@silker/plugin-selection": "workspace:*",
-    "@silker/plugin-history": "workspace:*"
+    "@silker/plugin-history": "workspace:*",
+    "@silker/plugin-command": "workspace:*"
   },
   "devDependencies": {
     "typescript": "~6.0.2"
