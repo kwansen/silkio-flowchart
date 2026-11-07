@@ -11,6 +11,7 @@ import { compose } from "@silker/plugin-history";
 import { Selection, selectionCapabilityKey } from "@silker/plugin-selection";
 import type { SelectionCapability } from "@silker/plugin-selection";
 import { Command, COMMAND_CAPABILITY } from "@silker/plugin-command";
+import { Pointer, POINTER_CAPABILITY } from "@silker/plugin-interaction";
 import { BuiltinShapes, SHAPE_REGISTRY_CAPABILITY } from "./shape-registry";
 import type { ShapeRegistryCapability } from "./shape-registry";
 import { Shape } from "./Shape";
@@ -467,6 +468,8 @@ export class FlowChart {
     commands.bind("delete", "flowchart.delete");
     commands.bind("backspace", "flowchart.delete");
     this.app.use(new Viewport());
+    // 安装指针交互插件：统一事件绑定/撤销与坐标换算（机制层），交互策略由本场景声明
+    this.app.use(new Pointer());
     // 安装导出插件：install 时自注册导出能力，toImage 按能力键消费
     this.app.use(new Exporter());
     // 安装官方形状/吸附/边路由插件（自注册各自能力），再装配应用层传入的第三方
@@ -1076,24 +1079,17 @@ export class FlowChart {
 
   //#region 交互
   private bindEvents(canvas: HTMLCanvasElement) {
-    const listen = (target: EventTarget, type: string, fn: EventListener) => {
-      target.addEventListener(type, fn);
-      this.cleanups.push(() => target.removeEventListener(type, fn));
-    };
-    listen(canvas, "mousedown", (e) => this.onDown(e as MouseEvent));
-    listen(window, "mousemove", (e) => this.onMove(e as MouseEvent));
-    listen(window, "mouseup", (e) => this.onUp(e as MouseEvent));
-    listen(document, "keydown", (e) => this.onKeyDown(e as KeyboardEvent));
-  }
-
-  // 屏幕坐标 → 世界坐标（视口逆变换）
-  private toWorld(e: MouseEvent) {
-    const rect = this.options.canvas.getBoundingClientRect();
-    const { x: vx, y: vy, scale } = this.app.renderer.viewport;
-    return {
-      x: (e.clientX - rect.left - vx) / scale,
-      y: (e.clientY - rect.top - vy) / scale,
-    };
+    // 统一指针监听：绑定/撤销与屏幕→世界坐标换算由指针能力承担（机制层），
+    // 本场景只声明各事件的交互策略；返回的撤销函数并入 cleanups 统一管理
+    const pointer = this.app.require(POINTER_CAPABILITY);
+    this.cleanups.push(
+      pointer.bind(canvas, {
+        onDown: (e) => this.onDown(e),
+        onWindowMove: (e) => this.onMove(e),
+        onWindowUp: (e) => this.onUp(e),
+        onKeydown: (e) => this.onKeyDown(e),
+      }),
+    );
   }
 
   // 命中形状：hitNode 返回最深层（可能是形状内嵌 Text），沿父链回溯到 Shape
@@ -1218,7 +1214,7 @@ export class FlowChart {
 
   private onDown(e: MouseEvent) {
     if (e.button !== 0) return;
-    const p = this.toWorld(e);
+    const p = this.app.renderer.toWorld(e.clientX, e.clientY);
     const scale = this.app.renderer.viewport.scale;
     // 按下后进入交互会话，悬浮端口提示不再显示
     this.hoverPort = null;
@@ -1389,7 +1385,7 @@ export class FlowChart {
     if (!s) {
       // 右键拖拽视口时跳过：viewport 已设置 grabbing，不要覆盖
       if (e.buttons & 2) return;
-      const p = this.toWorld(e);
+      const p = this.app.renderer.toWorld(e.clientX, e.clientY);
       const scale = this.app.renderer.viewport.scale;
       // 光标反馈先行：手柄/边线给缩放光标、连线端点手柄给移动光标
       let cursor: string | null = null;
@@ -1449,7 +1445,7 @@ export class FlowChart {
       this.options.canvas.style.cursor = cursor ?? "";
       return;
     }
-    const p = this.toWorld(e);
+    const p = this.app.renderer.toWorld(e.clientX, e.clientY);
     if (s.kind === "move") {
       s.moved = true;
       if (s.group) {
@@ -1824,7 +1820,7 @@ export class FlowChart {
       const snap = this.linkSnap;
       this.linkTarget = null;
       this.linkSnap = null;
-      const hit = target ?? this.hitShape(this.toWorld(e));
+      const hit = target ?? this.hitShape(this.app.renderer.toWorld(e.clientX, e.clientY));
       const cur = s.which === "from" ? s.edge.fromNode : s.edge.toNode;
       if (hit && !(hit === cur && !target)) {
         // 重接前定格原端（节点 + 端口方向），undo/redo 对称重接
@@ -1850,7 +1846,7 @@ export class FlowChart {
       const snap = this.linkSnap;
       this.linkTarget = null;
       this.linkSnap = null;
-      const p = this.toWorld(e);
+      const p = this.app.renderer.toWorld(e.clientX, e.clientY);
       // 未进入拖拽态（armed）即为纯点击端口：沿端口方向自动新建节点并连线
       if (!s.armed) {
         this.createNodeInDirection(s.source, s.sourceDir);
