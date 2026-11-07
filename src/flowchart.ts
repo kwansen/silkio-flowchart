@@ -4,7 +4,6 @@ import type { SelectionCapability, TextEditorCapability } from "@silker/core";
 import { selectionCapabilityKey, HISTORY_CAPABILITY } from "@silker/core";
 import { EXPORT_CAPABILITY, COMMAND_CAPABILITY, CANVAS_CLICK_CAPABILITY } from "@silker/core";
 import { officialPlugins } from "@silker/preset";
-import type { TextEditor } from "@silker/plugin-text-editor";
 import { BuiltinShapes, SHAPE_REGISTRY_CAPABILITY } from "./shape-registry";
 import type { ShapeRegistryCapability } from "./shape-registry";
 import { FlowEdge } from "./FlowEdge";
@@ -201,7 +200,7 @@ export class FlowChart {
 
   // 装配文本编辑器：按能力键取回官方预设（或宿主显式装配）的实例并接线场景回调
   private setupEditor(): TextEditorCapability {
-    const editor = this.app.require(TEXT_EDITOR_CAPABILITY) as TextEditor;
+    const editor = this.app.require(TEXT_EDITOR_CAPABILITY);
     // 输入实时同步：文本重测后重新居中（不改形状尺寸），覆盖层跟随新位置
     editor.onInput = () => {
       const shape = this.editing.editing;
