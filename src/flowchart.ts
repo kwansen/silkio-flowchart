@@ -402,30 +402,66 @@ export class FlowChart {
 
   // 替换当前选中形状的类型：保留位置、尺寸、文本、id 与全部连线
   // （连线两端引用直接重绑到新形状，端口方向维持创建时冻结的值不重选边），
-  // 新形状占据原形状的 z 序位置并进入选中态；多选或类型相同时不操作
+  // 新形状占据原形状的 z 序位置。单选/多选均生效——类型相同的成员跳过，
+  // 多个替换组合为一条原子命令（一次 undo 撤销整批）
   replaceSelected(kind: ShapeKind) {
-    const old = this.selShape;
-    if (!old || old.kind === kind) return;
-    const shape = this.model.createShape(kind, {
-      id: old.id as string,
-      x: old.x,
-      y: old.y,
-      width: old.width,
-      height: old.height,
-      text: old.text.text,
-    });
+    const targets = this.selShapes.filter((s) => s.kind !== kind);
+    if (!targets.length) return;
+    const pairs = targets.map((old) => ({
+      old,
+      shape: this.model.createShape(kind, {
+        id: old.id as string,
+        x: old.x,
+        y: old.y,
+        width: old.width,
+        height: old.height,
+        text: old.text.text,
+      }),
+    }));
     // 替换记录为可逆命令：undo/redo 对称地把旧/新形状顶替回去。
     // 序列化载荷：新旧形状都内嵌数据——旧形状脱离树后不在任何表里，
     // 导入端经会话注册表按 id 保证 undo/redo 顶替的是同一实例
-    this.history.exec({
-      type: "replace",
-      redo: () => this.model.swapShape(old, shape),
-      undo: () => this.model.swapShape(shape, old),
-      toJSON: () => ({
-        kind: "flowchart.replace",
-        payload: { oldData: shapeData(old), newData: shapeData(shape) },
-      }),
-    });
+    if (pairs.length === 1) {
+      const p = pairs[0];
+      this.history.exec({
+        type: "replace",
+        redo: () => this.model.swapShape(p.old, p.shape),
+        undo: () => this.model.swapShape(p.shape, p.old),
+        toJSON: () => ({
+          kind: "flowchart.replace",
+          payload: { oldData: shapeData(p.old), newData: shapeData(p.shape) },
+        }),
+      });
+    } else {
+      // 多选批量替换：序列化为组合命令（子命令与单选 replace 载荷同构，
+      // 编解码器复用现有分支）；swapShape 内逐个 onSelect 会把选中塌缩成
+      // 单选，redo 收尾恢复整组选中（undo/redo 按钮路径会另行清空选中）
+      this.history.exec({
+        type: "replace",
+        redo: () => {
+          for (const p of pairs) this.model.swapShape(p.old, p.shape);
+          for (const it of this.sel.items) it.selected = false;
+          this.sel.set(pairs.map((p) => p.shape));
+        },
+        undo: () => {
+          for (const p of [...pairs].reverse())
+            this.model.swapShape(p.shape, p.old);
+        },
+        toJSON: () => ({
+          kind: "composite",
+          payload: {
+            type: "replace",
+            children: pairs.map((p) => ({
+              kind: "flowchart.replace",
+              payload: {
+                oldData: shapeData(p.old),
+                newData: shapeData(p.shape),
+              },
+            })),
+          },
+        }),
+      });
+    }
     this.app.requestRender();
     this.onChange?.("replace");
   }
