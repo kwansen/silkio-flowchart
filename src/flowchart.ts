@@ -2,17 +2,20 @@ import { App, VIEWPORT_CAPABILITY, TEXT_EDITOR_CAPABILITY } from "@silker/core";
 import type {
   ExportOptions,
   HistoryCapability,
+  HistoryCommand,
   HistorySnapshot,
   Plugin,
 } from "@silker/core";
 import type { SelectionCapability, TextEditorCapability } from "@silker/core";
 import { selectionCapabilityKey, HISTORY_CAPABILITY } from "@silker/core";
 import { EXPORT_CAPABILITY, COMMAND_CAPABILITY, CANVAS_CLICK_CAPABILITY } from "@silker/core";
+import { compose } from "@silker/core";
 import { BuiltinShapes, SHAPE_REGISTRY_CAPABILITY } from "./shape-registry";
 import type { ShapeRegistryCapability } from "./shape-registry";
 import { FlowEdge } from "./FlowEdge";
+import type { FlowEdgeHints, PortDir } from "./FlowEdge";
 import type { Shape } from "./Shape";
-import type { FlowChangeType, FlowData, ShapeKind } from "./data";
+import type { FlowChangeType, FlowData, FlowNodeData, ShapeKind } from "./data";
 import type { Bounds } from "./snap";
 import { BuiltinSnap, SNAP_CAPABILITY } from "./snap-capability";
 import type { SnapCapability } from "./snap-capability";
@@ -89,6 +92,14 @@ export class FlowChart {
   private cleanups: Array<() => void> = [];
   // 已拆卸标志：构造器排入的初始 fit 帧回调在 destroy 后不再执行
   private disposed = false;
+  // 复制/粘贴剪贴板缓冲（场景内缓冲，不读写系统剪贴板）：形状数据快照 + 组内
+  // 连线快照（端点为形状在 nodes 中的下标 + 定格的端口方向），粘贴时按组重建
+  private clipboard: {
+    nodes: FlowNodeData[];
+    edges: Array<{ from: number; to: number; fromDir: PortDir; toDir: PortDir }>;
+  } | null = null;
+  // 连续粘贴错开计数（复制时归零）：多次粘贴逐次偏移，避免完全重叠
+  private pasteCount = 0;
 
   constructor(private options: FlowChartOptions) {
     this.onChange = options.onChange;
@@ -121,10 +132,13 @@ export class FlowChart {
       editing: () => this.editing.editing !== null,
       editorFocused: () => this.editor.hasFocus(),
       hasSelection: () => this.sel.items.length > 0,
+      canPaste: () => this.canPaste,
       undo: () => this.undo(),
       redo: () => this.redo(),
       deleteSelected: () => this.deleteSelected(),
       selectAll: () => this.selectAll(),
+      copySelected: () => this.copySelected(),
+      paste: () => this.paste(),
     });
     this.editor = this.setupEditor();
     this.editing = new FlowEditing({
@@ -296,6 +310,103 @@ export class FlowChart {
     this.sel.set(shapes);
     this.hover.clearPort();
     this.app.requestRender();
+  }
+
+  // 复制当前选中的形状入剪贴板缓冲（多选整组入档）：组内连线（两端都在复制集
+  // 内）一并快照——粘贴时按组重建，连线随两端节点恢复。选中连线时忽略
+  //（连线随两端节点重建，单独复制无意义）
+  copySelected() {
+    const shapes = this.selShapes;
+    if (!shapes.length) return;
+    const set = new Set(shapes);
+    this.clipboard = {
+      nodes: shapes.map((s) => shapeData(s)),
+      edges: this.model.edges
+        .filter((e) => set.has(e.fromNode) && set.has(e.toNode))
+        .map((e) => ({
+          from: shapes.indexOf(e.fromNode),
+          to: shapes.indexOf(e.toNode),
+          fromDir: e.fromDir,
+          toDir: e.toDir,
+        })),
+    };
+    this.pasteCount = 0;
+  }
+
+  get canPaste(): boolean {
+    return this.clipboard !== null;
+  }
+
+  // 粘贴剪贴板：组内形状按相对排布整体复制到视口中心（连续粘贴逐次错开避免
+  // 完全重叠），粘贴出的节点分配全新 id，组内连线按快照的端口方向重建。
+  // 整次粘贴为一条原子组合命令——子命令复用 add-shape/connect 的可逆对与
+  // 序列化载荷（既有 kind，编解码器无需新分支），undo/redo 整组回退/重放；
+  // 粘贴后整组进入多选态，可整体拖动或直接再次复制
+  paste() {
+    const clip = this.clipboard;
+    if (!clip?.nodes.length || this.editing.editing || this.interactions.busy)
+      return;
+    // 锚点 = 视口中心（世界坐标），组包围盒中心对齐锚点；错开量随连续粘贴递增
+    const rect = this.options.canvas.getBoundingClientRect();
+    const anchor = this.app.camera.toWorld(
+      rect.left + rect.width / 2,
+      rect.top + rect.height / 2,
+    );
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    for (const n of clip.nodes) {
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + (n.width ?? 0));
+      maxY = Math.max(maxY, n.y + (n.height ?? 0));
+    }
+    const drift = this.pasteCount++ * 24;
+    const dx = anchor.x - (minX + maxX) / 2 + drift;
+    const dy = anchor.y - (minY + maxY) / 2 + drift;
+    // 粘贴实例（不传 id，Node 自动生成全新 id）：先建形状再建组内连线（注入
+    // 边路由能力，与在位连线同一路由行为）
+    const shapes = clip.nodes.map((n) =>
+      this.model.createShape(n.shape, {
+        x: n.x + dx,
+        y: n.y + dy,
+        width: n.width,
+        height: n.height,
+        text: n.text,
+      }),
+    );
+    const edges = clip.edges.map(({ from, to, fromDir, toDir }) => {
+      const edge = new FlowEdge(shapes[from], shapes[to], {
+        from: fromDir,
+        to: toDir,
+      });
+      edge.router = this.router;
+      return edge;
+    });
+    this.history.exec(
+      compose(
+        "add",
+        ...shapes.map(
+          (s): HistoryCommand => ({
+            type: "add",
+            redo: () => this.model.registerShape(s),
+            undo: () => this.model.removeShape(s),
+            toJSON: () => ({
+              kind: "flowchart.add-shape",
+              payload: { data: shapeData(s) },
+            }),
+          }),
+        ),
+        ...edges.map((e) => this.model.edgeAddRemove(e)),
+      ),
+    );
+    // 整组进入多选态（与框选落定同一入口，整体移动/批量删除/再复制可用）
+    for (const it of this.sel.items) it.selected = false;
+    this.sel.set(shapes);
+    this.hover.clearPort();
+    this.app.requestRender();
+    this.onChange?.("add");
   }
 
   // 删除当前选中（形状连同其关联连线，或单条连线；多选时删除全部成员）。
@@ -597,7 +708,7 @@ export class FlowChart {
     this.sel.onMarqueeMove = null;
     this.sel.onMarqueeEnd = null;
     const commands = this.app.require(COMMAND_CAPABILITY);
-    for (const id of ["flowchart.undo", "flowchart.redo", "flowchart.delete", "flowchart.selectAll"]) {
+    for (const id of ["flowchart.undo", "flowchart.redo", "flowchart.delete", "flowchart.selectAll", "flowchart.copy", "flowchart.paste"]) {
       commands.unregister(id);
     }
     commands.guard = null;

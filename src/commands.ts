@@ -65,10 +65,13 @@ export interface FlowchartCommandHooks {
   editing(): boolean; // 文本编辑会话进行中
   editorFocused(): boolean; // 编辑器持焦（按键属于输入）
   hasSelection(): boolean; // 当前有选中项
+  canPaste(): boolean; // 剪贴板有内容可粘贴
   undo(): void;
   redo(): void;
   deleteSelected(): void;
   selectAll(): void;
+  copySelected(): void;
+  paste(): void;
 }
 
 // 注册流程图命令并绑定默认键位：撤销/重做/删除，document keydown 由命令
@@ -100,10 +103,24 @@ export function bindFlowchartCommands(
     title: "全选",
     run: () => hooks.selectAll(),
   });
+  commands.register({
+    id: "flowchart.copy",
+    title: "复制选中",
+    enabled: () => hooks.hasSelection(),
+    run: () => hooks.copySelected(),
+  });
+  commands.register({
+    id: "flowchart.paste",
+    title: "粘贴",
+    enabled: () => hooks.canPaste(),
+    run: () => hooks.paste(),
+  });
   commands.bind("mod+z", "flowchart.undo");
   commands.bind("mod+shift+z", "flowchart.redo");
   commands.bind("mod+y", "flowchart.redo");
   commands.bind("mod+a", "flowchart.selectAll");
+  commands.bind("mod+c", "flowchart.copy");
+  commands.bind("mod+v", "flowchart.paste");
   commands.bind("delete", "flowchart.delete");
   commands.bind("backspace", "flowchart.delete");
 }

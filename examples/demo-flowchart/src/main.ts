@@ -143,6 +143,14 @@ document
   .getElementById("add-note")!
   .addEventListener("click", () => addAtCenter("note", "便签"));
 
+// 复制/粘贴：复制当前选中（含组内连线），粘贴到视口中心（连续粘贴逐次错开）
+document
+  .getElementById("copy-btn")!
+  .addEventListener("click", () => flowchart.copySelected());
+document
+  .getElementById("paste-btn")!
+  .addEventListener("click", () => flowchart.paste());
+
 document
   .getElementById("delete-btn")!
   .addEventListener("click", () => flowchart.deleteSelected());
