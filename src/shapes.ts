@@ -1,6 +1,10 @@
 import { Shape } from "./Shape";
 import type { ShapeOptions } from "./Shape";
 import { PORT_STUB } from "./FlowEdge";
+// 形状几何（路径构建/命中判定）复用 core 的绘制原语，flowchart 只保留领域逻辑
+// （锚点 boundaryT、端口 portAt、文本内接 textFit）；core 的 Parallelogram 与
+// 本包同名类冲突，按别名引入
+import { Rect, Ellipse, Parallelogram as CoreParallelogram } from "@silker/core";
 
 // 圆角矩形（流程步骤）：默认矩形命中
 export class RectShape extends Shape {
@@ -23,7 +27,7 @@ export class RectShape extends Shape {
   }
 
   protected drawPath(ctx: CanvasRenderingContext2D) {
-    ctx.roundRect(0, 0, this.width, this.height, this.radius);
+    Rect.buildPath(ctx, this.width, this.height, this.radius);
   }
 
   protected contains(x: number, y: number) {
@@ -83,21 +87,11 @@ export class EllipseShape extends Shape {
   }
 
   protected drawPath(ctx: CanvasRenderingContext2D) {
-    ctx.ellipse(
-      this.width / 2,
-      this.height / 2,
-      this.width / 2,
-      this.height / 2,
-      0,
-      0,
-      Math.PI * 2,
-    );
+    Ellipse.buildPath(ctx, this.width, this.height);
   }
 
   protected contains(x: number, y: number) {
-    const a = this.width / 2;
-    const b = this.height / 2;
-    return ((x - a) / a) ** 2 + ((y - b) / b) ** 2 <= 1;
+    return Ellipse.containsPoint(this.width, this.height, x, y);
   }
 }
 
@@ -198,12 +192,7 @@ export class Parallelogram extends Shape {
   }
 
   protected drawPath(ctx: CanvasRenderingContext2D) {
-    const [a, b, c, d] = this.poly;
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.lineTo(c.x, c.y);
-    ctx.lineTo(d.x, d.y);
-    ctx.closePath();
+    CoreParallelogram.buildPath(ctx, this.width, this.height, this.skew);
   }
 }
 
