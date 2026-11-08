@@ -262,6 +262,10 @@ export class FlowInteractions {
     }
     const hit = hitShape(this.deps.app.children, p);
     if (hit) {
+      // 护住激活覆盖层焦点：mousedown 默认动作（焦点移向不可聚焦的 canvas，
+      // 即回落 body）会 blur 覆盖层 → 切回隐藏态，激活态打字/IME 落空。
+      // preventDefault 只拦焦点移动，移动/缩放/连线拖拽不受影响
+      e.preventDefault();
       // 按下在已单选节点上：记录屏幕坐标，抬起未拖动时进入编辑（拖拽仍优先）。
       // 多选组内按下不记录（未拖动的抬起塌缩为单选，不进编辑）
       const press =
@@ -640,10 +644,25 @@ export class FlowInteractions {
   }
 
   private onKeyDown(e: KeyboardEvent) {
-    // 覆盖层持有焦点时按键属于输入，交由编辑器处理
-    if (this.deps.editing.editing || this.deps.editor.hasFocus()) return;
+    // 编辑态按键属于输入，交由覆盖层处理。激活态（覆盖层持焦、未编辑）放行：
+    // 可打印字符/IME/Delete 已在覆盖层自身的唤醒键监听里先行处理（唤醒后
+    // editing 置位，此处自然短路），方向键落到本处微移选中节点
+    if (this.deps.editing.editing) return;
     // 撤销/重做/删除已注册为命令并绑定键位（构造器），由命令插件统一分发；
     // 此处只处理领域语义按键（方向键微移选中节点）
+    // 选中节点直接打字进入编辑（同连线激活态"打字即编辑"语义）：可打印字符/
+    // IME 唤醒空缓冲编辑态——不拦截默认插入，按键经 focus 转移落入覆盖层并由
+    // input 整体替换节点文本。方向键优先微移不唤醒；修饰组合（撤销/复制等
+    // 快捷键）不唤醒；多选（单选模型为空）与选中连线不在此唤醒
+    const sel = selShape(this.deps.sel);
+    if (
+      sel &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      (e.key.length === 1 || e.key === "Process" || e.keyCode === 229)
+    )
+      this.deps.editing.startEdit(sel);
     // 方向键：微移选中节点（Shift 加速），连线不参与移动
     const dir = {
       ArrowLeft: [-1, 0],
@@ -665,6 +684,8 @@ export class FlowInteractions {
       s.y += dy;
     }
     this.deps.history.record(nudgeCommand(targets, dx, dy, before));
+    // 节点已移动：重新对齐可能常驻挂载的激活覆盖层（其位置在挂载/输入时对齐）
+    this.deps.editor.reposition();
     this.deps.app.requestRender();
     this.deps.onChange?.("move");
   }
@@ -681,15 +702,14 @@ export class FlowInteractions {
       sel.selected = true;
       // 激活的连线提到连线层最上再渲染，避免激活样式被其他连线覆盖
       if (sel instanceof FlowEdge) this.deps.model.raiseEdgeTop(sel);
-      // 单选连线：挂载标签激活覆盖层（空缓冲常驻接收打字/IME，打字即编辑）；
-      // 单选形状：摘除连线标签覆盖层（形状仍走点击/双击进入编辑）
-      if (sel instanceof FlowEdge) this.deps.editing.activateLabel(sel);
-      else this.deps.editing.deactivateLabel();
+      // 单选（形状或连线）：挂载空缓冲激活覆盖层（隐藏、已聚焦、常驻接收
+      // 打字/IME，打字即编辑）。覆盖层须在 IME 组合开始前就位，故选中即挂载
+      this.deps.editing.activate(sel);
     } else {
       if (!this.deps.sel.items.length) return;
       for (const it of this.deps.sel.items) it.selected = false;
       this.deps.sel.clear();
-      this.deps.editing.deactivateLabel();
+      this.deps.editing.deactivate();
     }
     this.deps.app.requestRender();
   }

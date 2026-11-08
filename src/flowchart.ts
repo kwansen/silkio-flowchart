@@ -1,4 +1,4 @@
-import { App, VIEWPORT_CAPABILITY, TEXT_EDITOR_CAPABILITY } from "@silker/core";
+﻿import { App, VIEWPORT_CAPABILITY, TEXT_EDITOR_CAPABILITY } from "@silker/core";
 import type {
   ExportOptions,
   HistoryCapability,
@@ -276,7 +276,7 @@ export class FlowChart {
       else if (hits.length > 1) {
         selection.set(hits);
         // 框选结果为形状组合：摘除可能常驻的连线标签激活覆盖层
-        this.editing.deactivateLabel();
+        this.editing.deactivate();
         this.app.requestRender();
       }
     };
@@ -327,7 +327,7 @@ export class FlowChart {
     this.sel.set(shapes);
     this.hover.clearPort();
     // 全选为形状组合：摘除可能常驻的连线标签激活覆盖层
-    this.editing.deactivateLabel();
+    this.editing.deactivate();
     this.app.requestRender();
   }
 
@@ -426,7 +426,7 @@ export class FlowChart {
     for (const it of this.sel.items) it.selected = false;
     this.sel.set(shapes);
     this.hover.clearPort();
-    this.editing.deactivateLabel();
+    this.editing.deactivate();
     this.app.requestRender();
     this.onChange?.("add");
   }

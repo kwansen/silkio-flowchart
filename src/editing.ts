@@ -22,15 +22,16 @@ export interface FlowEditingDeps {
 export type EditTarget = Shape | FlowEdge;
 
 // 文本编辑会话：编辑态（正在编辑的形状/连线）与会话起点快照的唯一属主。
-// 连线标签另有「激活态」（同 mindmap 打字即编辑）：选中连线即挂载空缓冲覆盖层
-// （隐藏、已聚焦、常驻），打字/IME 直接落入覆盖层并唤醒为编辑态——唤醒只切换
-// 显隐、不移动焦点，首字符与组合窗口均正常进入
+// 形状正文与连线标签共用「激活态」（同 mindmap 打字即编辑）：选中即挂载空缓冲
+// 覆盖层（隐藏、已聚焦、常驻），打字/IME 直接落入覆盖层并唤醒为编辑态——唤醒只
+// 切换显隐、不移动焦点，首字符与组合窗口均正常进入
 export class FlowEditing {
   // 正在编辑的形状/连线（无编辑会话时为 null）
   editing: EditTarget | null = null;
-  // 激活态连线（覆盖层常驻挂载在其标签上；多选/形状选中/无选中时为 null）
-  private activated: FlowEdge | null = null;
-  // 编辑会话起点快照（目标引用与原文字符串，非整图快照）：startEdit/activateLabel
+  // 激活目标（形状正文或连线标签：空缓冲覆盖层常驻挂载、隐藏已聚焦；
+  // 多选/无选中时为 null）
+  private activated: EditTarget | null = null;
+  // 编辑会话起点快照（目标引用与原文字符串，非整图快照）：startEdit/activate
   // 记录，finishEdit 对比决定是否把文本变更记入历史
   private editingOld: { target: EditTarget | null; text: string } = {
     target: null,
@@ -51,7 +52,9 @@ export class FlowEditing {
     // 此时 this.editing 仍是旧目标（或 null），不会被新会话误清
     this.deps.editor.start(target.text);
     this.editing = target;
-    this.deps.editor.show({ fill: true, point });
+    // 点击路径（有点击点）：填入原文并把光标折叠到点击处；打字唤醒路径（无点击
+    // 点）：空缓冲覆盖层——按键的默认插入动作落在覆盖层，经 input 整体替换文本
+    this.deps.editor.show(point ? { fill: true, point } : {});
   }
 
   finishEdit() {
@@ -83,37 +86,41 @@ export class FlowEditing {
     }
   }
 
-  // 激活连线标签：挂载空缓冲覆盖层（隐藏态、已聚焦）常驻接收打字/IME，
-  // 同 mindmap 激活态；编辑态由唤醒键进入。重复激活同一连线跳过
-  activateLabel(edge: FlowEdge) {
-    if (this.activated === edge) return;
+  // 激活目标：挂载空缓冲覆盖层（隐藏态、已聚焦）常驻接收打字/IME，
+  // 同 mindmap 激活态；编辑态由唤醒键进入。重复激活同一目标跳过。
+  // 覆盖层必须在 IME 组合开始前就位（选中即挂载），组合窗口内再挂载/聚焦
+  // 会丢失首个组合字符
+  activate(target: EditTarget) {
+    if (this.activated === target) return;
     // 先 start：其内部 stop() 会触发旧会话的 onEditEnd → finishEdit，
     // 此时 editingOld 仍是旧会话快照（新快照在其后定格，不被误清）
-    this.deps.editor.start(edge.label);
-    this.activated = edge;
-    this.editingOld = { target: edge, text: edge.label.text };
+    this.deps.editor.start(target.text);
+    this.activated = target;
+    this.editingOld = { target, text: target.text.text };
   }
 
-  // 取消激活：移除覆盖层；编辑会话若在该标签上进行，经 stop 的 onEditEnd
-  // 正确收尾（finishEdit 对比记历史）。形状编辑会话不受影响
-  deactivateLabel() {
+  // 取消激活：移除覆盖层；编辑会话若在该目标上进行，经 stop 的 onEditEnd
+  // 正确收尾（finishEdit 对比记历史）
+  deactivate() {
     if (!this.activated) return;
     this.activated = null;
     this.deps.editor.stop();
   }
 
-  // 唤醒键绑定：仅边标签（形状仍走点击/双击进入编辑）。激活态（无编辑会话）：
-  // Delete/Backspace 删除选中连线；可打印字符/IME 组合唤醒编辑态；
-  // 编辑态按键全部交给覆盖层默认行为（方向键移光标、回车换行、删除键删字）
+  // 唤醒键绑定：激活态（无编辑会话）按 Delete/Backspace 删除选中；可打印
+  // 字符/IME 组合唤醒编辑态（空缓冲，键入经 input 整体替换文本）；编辑态
+  // 按键全部交给覆盖层默认行为（方向键移光标、回车换行、删除键删字）。
+  // 形状与连线标签同一套唤醒语义
   private bindWakeKeys(el: HTMLDivElement, text: Text) {
     const target = this.findTarget(text);
-    if (!(target instanceof FlowEdge)) return;
+    if (!target) return;
     const wake = () => {
       if (this.editing) return;
       this.editing = target;
-      // 空缓冲显示覆盖层：键入内容经 input 同步整体替换标签文本。
-      // 焦点已在覆盖层（挂载时聚焦），不拦截按键——首字符/组合正常进入
+      // 空缓冲显示覆盖层：键入内容经 input 同步整体替换文本。挂载后节点/
+      // 连线可能已被移动过（覆盖层按挂载时位置对齐），唤醒显形前重新对齐
       this.deps.editor.show();
+      this.deps.editor.reposition();
     };
     el.addEventListener("keydown", (e) => {
       if (this.editing) return;
