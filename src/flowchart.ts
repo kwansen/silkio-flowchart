@@ -87,6 +87,8 @@ export class FlowChart {
   // 创建连线时注入每个 FlowEdge，路由与渲染均按契约消费
   private router!: EdgeRouterCapability;
   private cleanups: Array<() => void> = [];
+  // 已拆卸标志：构造器排入的初始 fit 帧回调在 destroy 后不再执行
+  private disposed = false;
 
   constructor(private options: FlowChartOptions) {
     this.onChange = options.onChange;
@@ -204,6 +206,12 @@ export class FlowChart {
     // 选中框覆盖层注册为常驻顶层：新增形状/连线等结构变更由 App 自动保持其置顶
     this.app.addOverlay(this.overlay);
     this.cleanups.push(this.interactions.bind(options.canvas));
+    // 初始数据载入后自动居中（只平移不改缩放，节点视觉大小不变；对齐 mindmap
+    // 的居中观感）。延迟到下一帧执行：等 canvas 完成首次布局，getBoundingClientRect
+    // 才有真实尺寸；空数据（无形状）时 center 内部跳过
+    requestAnimationFrame(() => {
+      if (!this.disposed) this.center();
+    });
   }
 
   // 装配文本编辑器：按能力键取回宿主装配（通常为官方预设）的实例并接线场景回调
@@ -520,6 +528,17 @@ export class FlowChart {
     this.app.requestRender();
   }
 
+  // 居中视图：保持当前缩放不变，仅平移视口使全部形状包围盒中心对齐画布中心
+  //（节点视觉大小不变；初始化时调用，避免 fit 的缩放改变节点观感）
+  center() {
+    const shapes = [...this.model.shapes.values()];
+    if (!shapes.length) return;
+    const b = unionBounds(shapes);
+    this.app
+      .require(VIEWPORT_CAPABILITY)
+      .center({ minX: b.x, minY: b.y, maxX: b.x + b.width, maxY: b.y + b.height });
+  }
+
   // 导出全部形状与连线为图片（返回 Blob）：委托导出能力离屏渲染，与当前视口无关；
   // 显式传入形状与连线（不含选中框等覆盖层），绕行连线按路由折线并入包围盒
   async toImage(options?: ExportOptions): Promise<Blob> {
@@ -567,6 +586,7 @@ export class FlowChart {
   // 5) 卸载构造期安装的插件（能力注册表沿 previous 链撤销/恢复）。
   // 宿主自建的 App 与官方插件（显式装配）不受影响，可继续复用
   destroy() {
+    this.disposed = true;
     this.cleanups.forEach((fn) => fn());
     this.cleanups = [];
     this.editor.onInput = undefined;
