@@ -31,6 +31,7 @@ import {
   nudgeCommand,
   reconnectCommand,
   resizeCommand,
+  shapeData,
 } from "./commands";
 import { CLICK_CREATE_GAP, CLICK_MOVE_TOLERANCE } from "./session";
 import type { Session } from "./session";
@@ -590,6 +591,11 @@ export class FlowInteractions {
         {
           redo: () => this.deps.model.registerShape(shape),
           undo: () => this.deps.model.removeShape(shape),
+          // 序列化载荷：内嵌形状数据快照，与 addNode 命令同构
+          toJSON: () => ({
+            kind: "flowchart.add-shape",
+            payload: { data: shapeData(shape) },
+          }),
         },
         this.deps.model.edgeAddRemove(edge),
       ),

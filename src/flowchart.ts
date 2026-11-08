@@ -1,5 +1,10 @@
 import { App, VIEWPORT_CAPABILITY, TEXT_EDITOR_CAPABILITY } from "@silker/core";
-import type { ExportOptions, HistoryCapability, Plugin } from "@silker/core";
+import type {
+  ExportOptions,
+  HistoryCapability,
+  HistorySnapshot,
+  Plugin,
+} from "@silker/core";
 import type { SelectionCapability, TextEditorCapability } from "@silker/core";
 import { selectionCapabilityKey, HISTORY_CAPABILITY } from "@silker/core";
 import { EXPORT_CAPABILITY, COMMAND_CAPABILITY, CANVAS_CLICK_CAPABILITY } from "@silker/core";
@@ -15,7 +20,9 @@ import { BuiltinEdgeRouter, EDGE_ROUTER_CAPABILITY } from "./edge-router";
 import type { EdgeRouterCapability } from "./edge-router";
 import { SelectionOverlay } from "./overlay";
 import { marqueeHits, portPos, unionBounds } from "./geometry";
-import { bindFlowchartCommands } from "./commands";
+import { bindFlowchartCommands, shapeData } from "./commands";
+import { createFlowchartCodec } from "./history-codec";
+import type { DeletePayload } from "./history-codec";
 import { FlowModel } from "./model";
 import { FlowEditing } from "./editing";
 import { HoverFeedback } from "./hover";
@@ -253,11 +260,16 @@ export class FlowChart {
       height: input.height,
       text: input.text,
     });
-    // 注册动作本身作为可逆命令：redo 完成注册，undo 摘除节点及其关联连线
+    // 注册动作本身作为可逆命令：redo 完成注册，undo 摘除节点及其关联连线。
+    // 序列化载荷：内嵌形状数据快照，导入端经形状注册表重建
     this.history.exec({
       type: "add",
       redo: () => this.model.registerShape(shape),
       undo: () => this.model.removeShape(shape),
+      toJSON: () => ({
+        kind: "flowchart.add-shape",
+        payload: { data: shapeData(shape) },
+      }),
     });
     this.app.requestRender();
     this.onChange?.("add");
@@ -282,6 +294,27 @@ export class FlowChart {
           for (const c of [...captured].reverse())
             this.model.restoreShapeRemoval(c);
         },
+        // 序列化载荷：被删形状内嵌数据快照（脱离树后无从按 id 解析），关联连线
+        // 内嵌连线数据；order=连线表序、childIdx=z 序，两个索引都要定格
+        toJSON: () => ({
+          kind: "flowchart.delete",
+          payload: {
+            v: "shapes",
+            items: captured.map((c) => ({
+              data: shapeData(c.shape),
+              childIdx: c.childIdx,
+              edges: c.edges.map(({ edge, order, childIdx }) => ({
+                id: edge.id!,
+                fromId: edge.fromNode.id as string,
+                toId: edge.toNode.id as string,
+                fromDir: edge.fromDir,
+                toDir: edge.toDir,
+                order,
+                childIdx,
+              })),
+            })),
+          } satisfies DeletePayload,
+        }),
       });
       this.onChange?.("delete");
       return;
@@ -314,6 +347,23 @@ export class FlowChart {
           );
           this.model.insertAt(captured.edge, captured.childIdx);
         },
+        // 序列化载荷：单边删除——内嵌连线两端 id 与端口方向（脱离连线表后
+        // 无从按 id 解析，须可完整重建）+ 两个插入索引
+        toJSON: () => ({
+          kind: "flowchart.delete",
+          payload: {
+            v: "edge",
+            edge: {
+              edgeId: captured.edge.id!,
+              fromId: captured.edge.fromNode.id as string,
+              toId: captured.edge.toNode.id as string,
+              fromDir: captured.edge.fromDir,
+              toDir: captured.edge.toDir,
+            },
+            childIdx: captured.childIdx,
+            listIdx: captured.listIdx,
+          } satisfies DeletePayload,
+        }),
       });
     } else {
       const captured = this.model.captureShapeRemoval(sel);
@@ -323,6 +373,28 @@ export class FlowChart {
         type: "delete",
         redo: () => this.model.applyShapeRemoval(captured),
         undo: () => this.model.restoreShapeRemoval(captured),
+        // 序列化载荷：与多形状删除同构（单条目）
+        toJSON: () => ({
+          kind: "flowchart.delete",
+          payload: {
+            v: "shapes",
+            items: [
+              {
+                data: shapeData(captured.shape),
+                childIdx: captured.childIdx,
+                edges: captured.edges.map(({ edge, order, childIdx }) => ({
+                  id: edge.id!,
+                  fromId: edge.fromNode.id as string,
+                  toId: edge.toNode.id as string,
+                  fromDir: edge.fromDir,
+                  toDir: edge.toDir,
+                  order,
+                  childIdx,
+                })),
+              },
+            ],
+          } satisfies DeletePayload,
+        }),
       });
     }
     this.onChange?.("delete");
@@ -342,11 +414,17 @@ export class FlowChart {
       height: old.height,
       text: old.text.text,
     });
-    // 替换记录为可逆命令：undo/redo 对称地把旧/新形状顶替回去
+    // 替换记录为可逆命令：undo/redo 对称地把旧/新形状顶替回去。
+    // 序列化载荷：新旧形状都内嵌数据——旧形状脱离树后不在任何表里，
+    // 导入端经会话注册表按 id 保证 undo/redo 顶替的是同一实例
     this.history.exec({
       type: "replace",
       redo: () => this.model.swapShape(old, shape),
       undo: () => this.model.swapShape(shape, old),
+      toJSON: () => ({
+        kind: "flowchart.replace",
+        payload: { oldData: shapeData(old), newData: shapeData(shape) },
+      }),
     });
     this.app.requestRender();
     this.onChange?.("replace");
@@ -355,6 +433,24 @@ export class FlowChart {
   // 导出当前数据（位置为最新拖拽结果）
   toJSON(): FlowData {
     return this.model.toJSON();
+  }
+
+  // 导出历史栈为可序列化快照（撤销栈在先、重做栈在后）：栈内含不可序列化命令
+  // （如三方闭包命令）时返回 null，拒绝部分导出
+  exportHistory(): HistorySnapshot | null {
+    return this.history.exportJSON?.() ?? null;
+  }
+
+  // 导入历史快照替换当前撤销/重做栈：命令按 kind 经领域编解码器重建，形状/连线
+  // 引用按 id 解析——数据 id 须与导出时同源（用带 id 的 toJSON() 往返），任一
+  // 命令重建失败返回 false 且原栈不变
+  importHistory(data: HistorySnapshot): boolean {
+    const codec = createFlowchartCodec({
+      model: this.model,
+      app: this.app,
+      router: this.router,
+    });
+    return this.history.importJSON?.(data, (s) => codec.decode(s)) ?? false;
   }
 
   // 屏幕坐标 → 世界坐标：clientX/Y 为浏览器事件坐标口径（与指针事件一致，

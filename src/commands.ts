@@ -3,10 +3,62 @@
 // 只依赖调用方传入的数据快照，不触碰 FlowChart 内部状态
 
 import type { CommandCapability } from "@silker/core";
-import type { HistoryCommand } from "@silker/core";
+import type { HistoryCommand, SerializedCommand } from "@silker/core";
 import type { FlowEdge, PortDir } from "./FlowEdge";
 import type { Shape } from "./Shape";
 import type { Bounds } from "./snap";
+import type { FlowNodeData } from "./data";
+
+// 形状数据快照：id/几何/文本（与 model.toJSON 的节点条目同构，JSON 安全），
+// 供命令载荷内嵌，导入端经形状注册表重建。
+// 导出供 flowchart.ts / interactions.ts 的内联命令与 history-codec 共用
+export function shapeData(shape: Shape): FlowNodeData {
+  return {
+    id: shape.id ?? undefined,
+    shape: shape.kind,
+    x: shape.x,
+    y: shape.y,
+    width: shape.width,
+    height: shape.height,
+    text: shape.text.text,
+  };
+}
+
+// 命令载荷形状（kind 前缀 flowchart.，与 history-codec.ts 的解码一一对应）；
+// 引用一律按 id（Node 运行时保证非空，类型上 string|null 以 ! 收敛），几何/文本/
+// 端口方向为纯数据
+export interface MovePayload {
+  v: "abs" | "delta";
+  // abs：before/after 各定格一份绝对位置；delta：targets + 相对位移 + before 位置
+  before: Array<{ shapeId: string; x: number; y: number }>;
+  after?: Array<{ shapeId: string; x: number; y: number }>;
+  targets?: Array<string>;
+  dx?: number;
+  dy?: number;
+}
+interface ShapeRectData {
+  shapeId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+export type ResizePayload =
+  | { v: "single"; shapeId: string; before: Bounds; after: Bounds }
+  | { v: "group"; before: ShapeRectData[]; after: ShapeRectData[] };
+export interface ReconnectPayload {
+  edgeId: string;
+  which: "from" | "to";
+  oldNodeId: string;
+  oldDir: PortDir;
+  newNodeId: string;
+  newDir: PortDir;
+}
+export interface TextPayload {
+  shapeId: string;
+  before: string;
+  after: string;
+}
 
 // 命令回调钩子：命令分发时转发回 FlowChart 的对应入口（避免公开其私有成员）
 export interface FlowchartCommandHooks {
@@ -84,6 +136,15 @@ export function moveCommand(
         m.shape.y = m.y;
       }
     },
+    // 序列化载荷：形状按 id 引用 + 绝对位置快照，undo/redo 重放绝对位置
+    toJSON: () => ({
+      kind: "flowchart.move",
+      payload: {
+        v: "abs",
+        before: before.map((m) => ({ shapeId: m.shape.id!, x: m.x, y: m.y })),
+        after: after.map((m) => ({ shapeId: m.shape.id!, x: m.x, y: m.y })),
+      } satisfies MovePayload,
+    }),
   };
 }
 
@@ -108,6 +169,17 @@ export function nudgeCommand(
         m.shape.y = m.y;
       }
     },
+    // 序列化载荷：形状按 id 引用 + 相对位移，保留微调的相对语义
+    toJSON: () => ({
+      kind: "flowchart.move",
+      payload: {
+        v: "delta",
+        targets: targets.map((s) => s.id!),
+        dx,
+        dy,
+        before: before.map((m) => ({ shapeId: m.shape.id!, x: m.x, y: m.y })),
+      } satisfies MovePayload,
+    }),
   };
 }
 
@@ -127,6 +199,16 @@ export function resizeCommand(
       Object.assign(shape, before);
       shape.layout();
     },
+    // 序列化载荷：形状按 id 引用 + 前后 bounds 快照
+    toJSON: () => ({
+      kind: "flowchart.resize",
+      payload: {
+        v: "single",
+        shapeId: shape.id!,
+        before,
+        after,
+      } satisfies ResizePayload,
+    }),
   };
 }
 
@@ -159,6 +241,15 @@ export function groupResizeCommand(
         m.shape.layout();
       }
     },
+    // 序列化载荷：逐成员按 id 引用 + 前后几何快照
+    toJSON: () => ({
+      kind: "flowchart.resize",
+      payload: {
+        v: "group",
+        before: before.map((m) => ({ shapeId: m.shape.id!, x: m.x, y: m.y, width: m.width, height: m.height })),
+        after: after.map((m) => ({ shapeId: m.shape.id!, x: m.x, y: m.y, width: m.width, height: m.height })),
+      } satisfies ResizePayload,
+    }),
   };
 }
 
@@ -175,6 +266,18 @@ export function reconnectCommand(
     type: "reconnect",
     redo: () => edge.reattachEnd(which, newNode, newDir),
     undo: () => edge.reattachEnd(which, oldNode, oldDir),
+    // 序列化载荷：连线与两端节点按 id 引用，前后端口方向为纯数据
+    toJSON: () => ({
+      kind: "flowchart.reconnect",
+      payload: {
+        edgeId: edge.id!,
+        which,
+        oldNodeId: oldNode.id!,
+        oldDir,
+        newNodeId: newNode.id!,
+        newDir,
+      } satisfies ReconnectPayload,
+    }),
   };
 }
 
@@ -194,5 +297,10 @@ export function textCommand(
       shape.text.text = before;
       shape.layout();
     },
+    // 序列化载荷：形状按 id 引用 + 前后文本快照
+    toJSON: () => ({
+      kind: "flowchart.text",
+      payload: { shapeId: shape.id!, before, after } satisfies TextPayload,
+    }),
   };
 }

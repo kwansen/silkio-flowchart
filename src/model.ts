@@ -119,7 +119,8 @@ export class FlowModel {
   }
 
   // 连线增删的可逆对：redo 压回连线表并插入形状层之下，undo 摘除。
-  // 供 connect 命令直接入栈，也供组合命令复用
+  // 供 connect 命令直接入栈，也供组合命令复用。
+  // 序列化载荷：连线与两端节点按 id 引用，端口方向为纯数据
   edgeAddRemove(edge: FlowEdge): HistoryCommand {
     return {
       redo: () => {
@@ -130,6 +131,16 @@ export class FlowModel {
         this.edges = this.edges.filter((e) => e !== edge);
         this.removeTop(edge);
       },
+      toJSON: () => ({
+        kind: "flowchart.connect",
+        payload: {
+          edgeId: edge.id,
+          fromId: edge.fromNode.id as string,
+          toId: edge.toNode.id as string,
+          fromDir: edge.fromDir,
+          toDir: edge.toDir,
+        },
+      }),
     };
   }
 
