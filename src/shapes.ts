@@ -325,4 +325,17 @@ export class Database extends Shape {
     // 顶帽：经最高点的半椭圆（右 → 上 → 左）闭合轮廓
     ctx.ellipse(w / 2, ry, w / 2, ry, 0, 0, Math.PI, true);
   }
+
+  // 轮廓之外补画顶帽椭圆的前缘弧（下半弧）：圆柱顶面的透视边缘，体现体积感
+  render(ctx: CanvasRenderingContext2D) {
+    super.render(ctx);
+    const { width: w } = this;
+    const ry = this.capRy;
+    ctx.beginPath();
+    // 角度 0 → π（画布 y 轴向下）：经最低点的下半弧，左端与轮廓顶弧起点重合
+    ctx.ellipse(w / 2, ry, w / 2 - this.style.lineWidth / 2, ry, 0, 0, Math.PI, false);
+    ctx.strokeStyle = this.style.stroke;
+    ctx.lineWidth = this.style.lineWidth;
+    ctx.stroke();
+  }
 }
