@@ -202,6 +202,18 @@ export class FlowChart {
           selEdge && !selEdge.dragWhich && selEdge.points.length >= 2
             ? [selEdge.points[0], selEdge.points[selEdge.points.length - 1]]
             : [],
+        // 激活连线的标签激活框（空白标签不可见时不画）：标签为子节点且连线
+        // 变换恒为单位阵，本地坐标即世界坐标
+        edgeLabel:
+          selEdge && !selEdge.dragWhich && selEdge.label.visible
+            ? {
+                x: selEdge.label.x,
+                y: selEdge.label.y,
+                width: selEdge.label.width,
+                height: selEdge.label.height,
+                radius: edgeLabelRadius(selEdge.label.boxStyle.radius),
+              }
+            : null,
         link: this.interactions.linkTarget
           ? {
               // 对接手柄位于节点边缘的实际连接点（与连线端口/预览吸附一致）
@@ -743,4 +755,11 @@ export class FlowChart {
   private get multiBounds(): Bounds | null {
     return multiBoundsOf(this.sel);
   }
+}
+
+// 标签盒圆角归一化：radius 支持单值或四角数组，激活框描边取单值圆角
+//（连线标签固定用单值圆角，四角数组走首角兜底）
+function edgeLabelRadius(radius: number | [number, number, number, number] | undefined): number {
+  if (radius === undefined) return 0;
+  return typeof radius === "number" ? radius : radius[0];
 }

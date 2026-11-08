@@ -68,6 +68,15 @@ export class SelectionOverlay extends Node {
       hoverPort: PortDir | null;
       // 激活连线的首尾端点手柄（世界坐标）
       edgeHandles: Array<{ x: number; y: number }>;
+      // 激活连线的标签激活框（世界坐标 + 圆角）：类似思维导图节点的蓝色高亮环，
+      // 紧贴标签白底盒包围盒；连线未选中或标签为空（不可见）时为 null
+      edgeLabel: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        radius: number;
+      } | null;
       // 连线拖拽中的目标节点：ports 为其四个对接手柄，active 为吸附中的手柄
       link: {
         ports: Array<{ x: number; y: number }>;
@@ -90,6 +99,7 @@ export class SelectionOverlay extends Node {
       ports,
       hoverPort,
       edgeHandles,
+      edgeLabel,
       link,
       guides,
       marquee,
@@ -159,6 +169,21 @@ export class SelectionOverlay extends Node {
         ctx.fill();
         ctx.stroke();
       }
+    }
+    // 激活连线的标签激活框：紧贴标签盒的蓝色圆角描边（类似思维导图节点高亮环），
+    // 圆角沿用标签自身圆角；标签随连线重定位，此处逐帧读状态自动跟随
+    if (edgeLabel) {
+      ctx.strokeStyle = SELECT_COLOR;
+      ctx.lineWidth = 1.5 * k;
+      ctx.beginPath();
+      ctx.roundRect(
+        edgeLabel.x,
+        edgeLabel.y,
+        edgeLabel.width,
+        edgeLabel.height,
+        edgeLabel.radius,
+      );
+      ctx.stroke();
     }
     // 连线拖拽目标：浮出对接手柄，吸附中的手柄实心高亮
     if (link) this.drawPorts(ctx, link.ports, k, link.active);
