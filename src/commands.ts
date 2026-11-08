@@ -91,12 +91,21 @@ export interface FlowchartCommandHooks {
 
 // 注册流程图命令并绑定默认键位：撤销/重做/删除，document keydown 由命令
 // 插件统一分发；应用层与第三方可按能力键复用命令或重绑键位。
-// 分发守卫与键盘策略同款：编辑或编辑器持焦时按键属于输入，交由编辑器处理
+// 分发守卫同 mindmap keymapGuard：编辑会话中按键属于输入，一律不拦；激活态
+// 常驻覆盖层持焦（空缓冲接收打字），无修饰键按键属于打字唤醒交由覆盖层，
+// Ctrl/Cmd/Alt 组合键（复制/粘贴/撤销等）仍走命令分发——否则激活态下
+// mod+c/mod+v 被守卫拦截，原生行为落到空覆盖层上（复制得到空文本、
+// 粘贴把系统剪贴板文字写进节点）
 export function bindFlowchartCommands(
   commands: CommandCapability,
   hooks: FlowchartCommandHooks,
 ) {
-  commands.guard = (e) => !hooks.editing() && !hooks.editorFocused();
+  commands.guard = (e) => {
+    if (hooks.editing()) return false;
+    if (hooks.editorFocused() && !(e.ctrlKey || e.metaKey || e.altKey))
+      return false;
+    return true;
+  };
   commands.register({
     id: "flowchart.undo",
     title: "撤销",
