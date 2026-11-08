@@ -36,6 +36,16 @@ export interface MovePayload {
   dx?: number;
   dy?: number;
 }
+// 连线创建载荷：标签文本随连线内嵌（剪贴板粘贴重建时标签不丢；
+// 缺省为空标签）。文本编辑走独立的 edgeText 命令
+export interface ConnectPayload {
+  edgeId: string;
+  fromId: string;
+  toId: string;
+  fromDir: PortDir;
+  toDir: PortDir;
+  text?: string;
+}
 interface ShapeRectData {
   shapeId: string;
   x: number;
@@ -56,6 +66,11 @@ export interface ReconnectPayload {
 }
 export interface TextPayload {
   shapeId: string;
+  before: string;
+  after: string;
+}
+export interface EdgeTextPayload {
+  edgeId: string;
   before: string;
   after: string;
 }
@@ -325,6 +340,30 @@ export function textCommand(
     toJSON: () => ({
       kind: "flowchart.text",
       payload: { shapeId: shape.id!, before, after } satisfies TextPayload,
+    }),
+  };
+}
+
+// 连线标签编辑命令：redo/undo 对称改写标签文本并重排（重测 + 折线中点居中）
+export function edgeTextCommand(
+  edge: FlowEdge,
+  before: string,
+  after: string,
+): HistoryCommand {
+  return {
+    type: "text",
+    redo: () => {
+      edge.label.text = after;
+      edge.layout();
+    },
+    undo: () => {
+      edge.label.text = before;
+      edge.layout();
+    },
+    // 序列化载荷：连线按 id 引用 + 前后文本快照
+    toJSON: () => ({
+      kind: "flowchart.edgeText",
+      payload: { edgeId: edge.id!, before, after } satisfies EdgeTextPayload,
     }),
   };
 }

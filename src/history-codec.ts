@@ -19,7 +19,7 @@ import type { Shape } from "./Shape";
 import type { FlowNodeData } from "./data";
 import type { EdgeRouterCapability } from "./edge-router";
 import type { FlowModel } from "./model";
-import type { MovePayload, ResizePayload, ReconnectPayload, TextPayload } from "./commands";
+import type { MovePayload, ResizePayload, ReconnectPayload, TextPayload, EdgeTextPayload, ConnectPayload } from "./commands";
 
 export interface FlowchartCodecDeps {
   model: FlowModel;
@@ -32,16 +32,9 @@ export interface FlowchartCodecDeps {
 export interface AddShapePayload {
   data: FlowNodeData;
 }
-export interface ConnectPayload {
-  edgeId: string;
-  fromId: string;
-  toId: string;
-  fromDir: PortDir;
-  toDir: PortDir;
-}
 export interface DeletePayload {
   v: "shapes" | "edge";
-  // shapes：被删形状内嵌数据快照 + 关联连线内嵌端点/方向 + 两个插入索引
+  // shapes：被删形状内嵌数据快照 + 关联连线内嵌端点/方向/标签文本 + 两个插入索引
   //（order=连线表序、childIdx=z 序）
   items?: Array<{
     data: FlowNodeData;
@@ -52,6 +45,7 @@ export interface DeletePayload {
       toId: string;
       fromDir: PortDir;
       toDir: PortDir;
+      text?: string;
       order: number;
       childIdx: number;
     }>;
@@ -63,6 +57,7 @@ export interface DeletePayload {
     toId: string;
     fromDir: PortDir;
     toDir: PortDir;
+    text?: string;
   };
   childIdx?: number;
   listIdx?: number;
@@ -107,12 +102,14 @@ export function createFlowchartCodec(deps: FlowchartCodecDeps) {
   }
 
   // 连线解析：模型连线表 → 注册表；都没有则按端点与端口方向重建并回写原 id
+  //（标签文本随载荷内嵌，重建连线恢复原标签）
   function resolveEdge(
     id: string,
     fromId: string,
     toId: string,
     fromDir: PortDir,
     toDir: PortDir,
+    text?: string,
   ): FlowEdge | null {
     const live = model.edges.find((e) => e.id === id);
     if (live) return live;
@@ -124,6 +121,7 @@ export function createFlowchartCodec(deps: FlowchartCodecDeps) {
     const edge = new FlowEdge(from, to, { from: fromDir, to: toDir });
     edge.id = id;
     edge.router = router;
+    if (text) edge.label.text = text;
     edges.set(id, edge);
     return edge;
   }
@@ -145,6 +143,8 @@ export function createFlowchartCodec(deps: FlowchartCodecDeps) {
         return decodeReconnect(s.payload as ReconnectPayload);
       case "flowchart.text":
         return decodeText(s.payload as TextPayload);
+      case "flowchart.edgeText":
+        return decodeEdgeText(s.payload as EdgeTextPayload);
       case "flowchart.add-shape":
         return decodeAddShape(s.payload as AddShapePayload);
       case "flowchart.connect":
@@ -302,6 +302,24 @@ export function createFlowchartCodec(deps: FlowchartCodecDeps) {
     };
   }
 
+  // 连线标签编辑解码：连线不摘除，必在连线表或本会话已重建（同 reconnect 规则）
+  function decodeEdgeText(p: EdgeTextPayload): HistoryCommand | null {
+    const edge = model.edges.find((e) => e.id === p.edgeId) ?? edges.get(p.edgeId);
+    if (!edge) return null;
+    return {
+      type: "text",
+      redo: () => {
+        edge.label.text = p.after;
+        edge.layout();
+      },
+      undo: () => {
+        edge.label.text = p.before;
+        edge.layout();
+      },
+      toJSON: () => ({ kind: "flowchart.edgeText", payload: p }),
+    };
+  }
+
   function decodeAddShape(p: AddShapePayload): HistoryCommand | null {
     const shape = resolveShape(p.data.id, p.data);
     if (!shape) return null;
@@ -314,7 +332,7 @@ export function createFlowchartCodec(deps: FlowchartCodecDeps) {
   }
 
   function decodeConnect(p: ConnectPayload): HistoryCommand | null {
-    const edge = resolveEdge(p.edgeId, p.fromId, p.toId, p.fromDir, p.toDir);
+    const edge = resolveEdge(p.edgeId, p.fromId, p.toId, p.fromDir, p.toDir, p.text);
     if (!edge) return null;
     return {
       type: "connect",
@@ -333,7 +351,7 @@ export function createFlowchartCodec(deps: FlowchartCodecDeps) {
   function decodeDelete(p: DeletePayload): HistoryCommand | null {
     if (p.v === "edge") {
       const e = p.edge!;
-      const edge = resolveEdge(e.edgeId, e.fromId, e.toId, e.fromDir, e.toDir);
+      const edge = resolveEdge(e.edgeId, e.fromId, e.toId, e.fromDir, e.toDir, e.text);
       if (!edge) return null;
       return {
         type: "delete",
@@ -354,7 +372,7 @@ export function createFlowchartCodec(deps: FlowchartCodecDeps) {
     const revives: Array<{
       data: FlowNodeData;
       childIdx: number;
-      edges: Array<{ id: string; fromId: string; toId: string; fromDir: PortDir; toDir: PortDir; order: number; childIdx: number }>;
+      edges: Array<{ id: string; fromId: string; toId: string; fromDir: PortDir; toDir: PortDir; text?: string; order: number; childIdx: number }>;
     }> = [];
     for (const item of p.items ?? []) {
       const shape = resolveShape(item.data.id, item.data);
@@ -371,7 +389,7 @@ export function createFlowchartCodec(deps: FlowchartCodecDeps) {
       if (!shape) return null;
       const itemEdges: Array<{ edge: FlowEdge; order: number; childIdx: number }> = [];
       for (const e of r.edges) {
-        const edge = resolveEdge(e.id, e.fromId, e.toId, e.fromDir, e.toDir);
+        const edge = resolveEdge(e.id, e.fromId, e.toId, e.fromDir, e.toDir, e.text);
         if (!edge) return null;
         itemEdges.push({ edge, order: e.order, childIdx: e.childIdx });
       }

@@ -154,10 +154,17 @@ export class FlowInteractions {
     });
   }
 
+  // 悬浮连线待编辑态：按下时命中已选中的连线（第二次点击，即"双击"语义），
+  // 抬起未拖动时进入标签编辑（与节点"单击已选中进入编辑"同一交互模式；
+  // 延迟到抬起是为避开编辑覆盖层聚焦与本次点击事件的焦点竞争）
+  private pendingEdgeEdit: { edge: FlowEdge; press: { x: number; y: number } } | null =
+    null;
+
   private onDown(e: MouseEvent) {
     if (e.button !== 0) return;
     const p = this.deps.app.camera.toWorld(e.clientX, e.clientY);
     const scale = this.deps.app.camera.viewport.scale;
+    this.pendingEdgeEdit = null;
     // 按下后进入交互会话，悬浮端口提示不再显示
     this.deps.hover.reset();
     // 选中态下按优先级命中：角手柄缩放 → 端口连线 → 边线缩放 → 形状体移动
@@ -282,10 +289,15 @@ export class FlowInteractions {
       }
       return;
     }
-    // 形状未命中时尝试命中连线（形状层在上，优先选中形状）
+    // 形状未命中时尝试命中连线（形状层在上，优先选中形状）；
+    // 已选中的连线再次点击（双击语义）时抬起进入标签编辑
     const hitLine = hitEdge(this.deps.model.edges, p, scale);
     if (hitLine) {
+      const already =
+        this.deps.sel.items.length === 1 && this.deps.sel.items[0] === hitLine;
       this.select(hitLine);
+      if (already)
+        this.pendingEdgeEdit = { edge: hitLine, press: { x: e.clientX, y: e.clientY } };
       this.deps.app.requestRender();
       return;
     }
@@ -425,7 +437,18 @@ export class FlowInteractions {
 
   private onUp(e: MouseEvent) {
     const s = this.session;
-    if (!s) return;
+    if (!s) {
+      // 无会话的抬起：命中已选中连线的点击（双击语义）且未拖动时进入标签编辑
+      const pend = this.pendingEdgeEdit;
+      this.pendingEdgeEdit = null;
+      if (
+        pend &&
+        Math.hypot(e.clientX - pend.press.x, e.clientY - pend.press.y) <=
+          CLICK_MOVE_TOLERANCE
+      )
+        this.deps.editing.startEdit(pend.edge, pend.press);
+      return;
+    }
     this.session = null;
     // 交互会话结束：停止边缘自动平移（仅移动会话启动过，幂等）
     this.edgePan.stop();

@@ -1,4 +1,4 @@
-import { Edge, pointsBounds } from '@silker/core'
+import { Edge, Text, pointsBounds } from '@silker/core'
 import type { Bounds, EdgePoint } from '@silker/core'
 import type { EdgeRouterCapability } from './edge-router'
 import type { Shape } from './Shape'
@@ -39,6 +39,14 @@ export class FlowEdge extends Edge {
   // 边路由能力（FlowChart 装配时注入，第三方路由插件经能力键覆盖）：
   // null 时回退到内置正交路由（本类的静态方法与渲染辅助），保持独立可用
   router: EdgeRouterCapability | null = null
+  // 连线标签（内嵌 Text 子节点）：双击连线进入编辑（复用文本编辑器能力），
+  // 渲染时定位在路由折线的中点，白底圆角盒遮住下方线体；空文本不显示
+  label: Text
+
+  // 文本载体（编辑会话与文本编辑器按 .text 统一取文本节点，与 Shape 同构）：即标签
+  get text(): Text {
+    return this.label
+  }
 
   constructor(from: Shape, to: Shape, hints: FlowEdgeHints = {}) {
     super({ color: '#94a3b8', lineWidth: 2, cornerRadius: 8 })
@@ -53,6 +61,20 @@ export class FlowEdge extends Edge {
     const horizontal = Math.abs(dx) >= Math.abs(dy)
     this.fromDir = hints.from ?? (horizontal ? (dx >= 0 ? 'right' : 'left') : (dy >= 0 ? 'bottom' : 'top'))
     this.toDir = hints.to ?? (horizontal ? (dx >= 0 ? 'left' : 'right') : (dy >= 0 ? 'top' : 'bottom'))
+    // 标签：自动定宽单行文本，白底盒遮线；子节点随本节点渲染（本节点变换恒为
+    // 单位阵，子节点本地坐标即世界坐标）。空文本置 visible=false 不画白盒
+    this.label = new Text({
+      text: '',
+      fill: '#475569',
+      fontSize: 12,
+      fontFamily: 'sans-serif',
+      align: 'center',
+      lineHeight: 1.4,
+      padding: [2, 6],
+      boxStyle: { fill: '#ffffff', radius: 4 },
+    })
+    this.label.visible = false
+    this.add(this.label)
   }
 
   // 重接一端：更换该端节点并重选端口方向（dir 缺省时按与另一端的主导方向自动选边）
@@ -73,12 +95,45 @@ export class FlowEdge extends Edge {
     }
   }
 
-  // 渲染前重算路由（也刷新 from/to 供箭头取末端方向）
+  // 渲染前重算路由（也刷新 from/to 供箭头取末端方向），并把标签定位到折线中点
   update() {
     const pts = this.route()
     this.points = pts
     this.from = pts[0]
     this.to = pts[pts.length - 1]
+    this.positionLabel()
+  }
+
+  // 标签重排（文本变化后调用，与 Shape.layout 同语义）：重测尺寸后按折线中点
+  // 居中定位；空文本（无可视字符）隐藏，避免白底空盒遮线
+  layout() {
+    this.label.measure()
+    this.positionLabel()
+    this.label.visible = /\S/.test(this.label.text)
+  }
+
+  // 把标签居中定位到折线弧长中点：沿线走行至总长一半处（label 为子节点，
+  // 本节点变换恒为单位阵，本地坐标即世界坐标）
+  private positionLabel() {
+    const pts = this.points
+    if (pts.length < 2) return
+    let total = 0
+    for (let i = 1; i < pts.length; i++)
+      total += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
+    let half = total / 2
+    let p = pts[pts.length - 1]
+    for (let i = 1; i < pts.length; i++) {
+      const len = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
+      if (half <= len) {
+        const t = len === 0 ? 0 : half / len
+        const a = pts[i - 1]
+        p = { x: a.x + (pts[i].x - a.x) * t, y: a.y + (pts[i].y - a.y) * t }
+        break
+      }
+      half -= len
+    }
+    this.label.x = p.x - this.label.width / 2
+    this.label.y = p.y - this.label.height / 2
   }
 
   render(ctx: CanvasRenderingContext2D) {

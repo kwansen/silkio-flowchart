@@ -75,8 +75,9 @@ export class FlowModel {
     for (const e of data.edges) {
       const from = this.shapes.get(e.from);
       const to = this.shapes.get(e.to);
-      if (from && to)
-        this.addEdgeBetween(from, to, false, { from: e.fromDir, to: e.toDir });
+      if (!from || !to) continue;
+      const edge = this.addEdgeBetween(from, to, false, { from: e.fromDir, to: e.toDir });
+      if (e.text) edge.label.text = e.text;
     }
     this.deps.app.requestRender();
   }
@@ -139,6 +140,7 @@ export class FlowModel {
           toId: edge.toNode.id as string,
           fromDir: edge.fromDir,
           toDir: edge.toDir,
+          text: edge.label.text || undefined,
         },
       }),
     };
@@ -246,6 +248,7 @@ export class FlowModel {
         to: e.toNode.id as string,
         fromDir: e.fromDir,
         toDir: e.toDir,
+        text: e.label.text || undefined,
       })),
     };
   }

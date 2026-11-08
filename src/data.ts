@@ -32,6 +32,8 @@ export interface FlowEdgeData {
   // 固定的出边/入边端口（四向边中点），创建时冻结；缺省时按创建时的主导方向自动选边
   fromDir?: PortDir
   toDir?: PortDir
+  // 连线标签文本（双击连线编辑）；缺省为空（不显示标签）
+  text?: string
 }
 
 export interface FlowData {

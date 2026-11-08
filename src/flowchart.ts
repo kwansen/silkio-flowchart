@@ -93,10 +93,11 @@ export class FlowChart {
   // 已拆卸标志：构造器排入的初始 fit 帧回调在 destroy 后不再执行
   private disposed = false;
   // 复制/粘贴剪贴板缓冲（场景内缓冲，不读写系统剪贴板）：形状数据快照 + 组内
-  // 连线快照（端点为形状在 nodes 中的下标 + 定格的端口方向），粘贴时按组重建
+  // 连线快照（端点为形状在 nodes 中的下标 + 定格的端口方向 + 标签文本），
+  // 粘贴时按组重建
   private clipboard: {
     nodes: FlowNodeData[];
-    edges: Array<{ from: number; to: number; fromDir: PortDir; toDir: PortDir }>;
+    edges: Array<{ from: number; to: number; fromDir: PortDir; toDir: PortDir; text?: string }>;
   } | null = null;
   // 连续粘贴错开计数（复制时归零）：多次粘贴逐次偏移，避免完全重叠
   private pasteCount = 0;
@@ -328,6 +329,7 @@ export class FlowChart {
           to: shapes.indexOf(e.toNode),
           fromDir: e.fromDir,
           toDir: e.toDir,
+          text: e.label.text || undefined,
         })),
     };
     this.pasteCount = 0;
@@ -376,12 +378,13 @@ export class FlowChart {
         text: n.text,
       }),
     );
-    const edges = clip.edges.map(({ from, to, fromDir, toDir }) => {
+    const edges = clip.edges.map(({ from, to, fromDir, toDir, text }) => {
       const edge = new FlowEdge(shapes[from], shapes[to], {
         from: fromDir,
         to: toDir,
       });
       edge.router = this.router;
+      if (text) edge.label.text = text;
       return edge;
     });
     this.history.exec(
@@ -442,6 +445,7 @@ export class FlowChart {
                 toId: edge.toNode.id as string,
                 fromDir: edge.fromDir,
                 toDir: edge.toDir,
+                text: edge.label.text || undefined,
                 order,
                 childIdx,
               })),
@@ -492,6 +496,7 @@ export class FlowChart {
               toId: captured.edge.toNode.id as string,
               fromDir: captured.edge.fromDir,
               toDir: captured.edge.toDir,
+              text: captured.edge.label.text || undefined,
             },
             childIdx: captured.childIdx,
             listIdx: captured.listIdx,
@@ -521,6 +526,7 @@ export class FlowChart {
                   toId: edge.toNode.id as string,
                   fromDir: edge.fromDir,
                   toDir: edge.toDir,
+                  text: edge.label.text || undefined,
                   order,
                   childIdx,
                 })),
