@@ -122,6 +122,7 @@ export class FlowChart {
       undo: () => this.undo(),
       redo: () => this.redo(),
       deleteSelected: () => this.deleteSelected(),
+      selectAll: () => this.selectAll(),
     });
     this.editor = this.setupEditor();
     this.editing = new FlowEditing({
@@ -274,6 +275,19 @@ export class FlowChart {
     this.app.requestRender();
     this.onChange?.("add");
     return shape.id as string;
+  }
+
+  // 全选：全部形状进入多选组合态（整体移动/批量删除/批量替换可用）；多选组合
+  // 只含形状（与框选语义一致，关联连线随形状删除，无需单独选中）。
+  // 编辑中不响应（mod+a 属输入框原生全选，守卫已放行）
+  selectAll() {
+    if (this.editing.editing) return;
+    const shapes = [...this.model.shapes.values()];
+    if (!shapes.length) return;
+    for (const it of this.sel.items) it.selected = false;
+    this.sel.set(shapes);
+    this.hover.clearPort();
+    this.app.requestRender();
   }
 
   // 删除当前选中（形状连同其关联连线，或单条连线；多选时删除全部成员）。
@@ -563,7 +577,7 @@ export class FlowChart {
     this.sel.onMarqueeMove = null;
     this.sel.onMarqueeEnd = null;
     const commands = this.app.require(COMMAND_CAPABILITY);
-    for (const id of ["flowchart.undo", "flowchart.redo", "flowchart.delete"]) {
+    for (const id of ["flowchart.undo", "flowchart.redo", "flowchart.delete", "flowchart.selectAll"]) {
       commands.unregister(id);
     }
     commands.guard = null;

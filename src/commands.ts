@@ -68,6 +68,7 @@ export interface FlowchartCommandHooks {
   undo(): void;
   redo(): void;
   deleteSelected(): void;
+  selectAll(): void;
 }
 
 // 注册流程图命令并绑定默认键位：撤销/重做/删除，document keydown 由命令
@@ -94,9 +95,15 @@ export function bindFlowchartCommands(
     enabled: () => hooks.hasSelection(),
     run: () => hooks.deleteSelected(),
   });
+  commands.register({
+    id: "flowchart.selectAll",
+    title: "全选",
+    run: () => hooks.selectAll(),
+  });
   commands.bind("mod+z", "flowchart.undo");
   commands.bind("mod+shift+z", "flowchart.redo");
   commands.bind("mod+y", "flowchart.redo");
+  commands.bind("mod+a", "flowchart.selectAll");
   commands.bind("delete", "flowchart.delete");
   commands.bind("backspace", "flowchart.delete");
 }
