@@ -1,4 +1,4 @@
-import { App } from "@silker/core";
+import { App, EdgePan } from "@silker/core";
 import type { HistoryCapability } from "@silker/core";
 import { compose } from "@silker/core";
 import { POINTER_CAPABILITY } from "@silker/core";
@@ -73,8 +73,68 @@ export class FlowInteractions {
   // 框选拖拽中的实时组合框（已框中节点的并集 bounds，供覆盖层绘制；松手后清空，
   // 由门面的 selection.onMarqueeMove/onMarqueeEnd 写入）
   marqueeCombo: Bounds | null = null;
+  // 边缘自动平移（core 机制）：节点拖拽移动中指针贴近画布边缘时持续平移视口，
+  // 每次平移后按指针屏幕坐标重放移动逻辑（节点跟随鼠标）；相机-only 呈现由 core 负责
+  private edgePan: EdgePan;
 
-  constructor(private deps: FlowInteractionsDeps) {}
+  constructor(private deps: FlowInteractionsDeps) {
+    this.edgePan = new EdgePan(deps.app, (x, y) => this.onEdgePan(x, y));
+  }
+
+  // 边缘平移帧回调：仅节点移动会话跟随（缩放/连线等会话不平移视口）
+  private onEdgePan(clientX: number, clientY: number) {
+    const s = this.session;
+    if (!s || s.kind !== "move") return;
+    this.applyMove(s, this.deps.app.camera.toWorld(clientX, clientY));
+  }
+
+  // 移动会话帧应用：按世界坐标 p 重放「按下时原始位置 + 本帧位移 + 吸附修正」，
+  // mousemove 与边缘自动平移的帧回调共用（平移后无需鼠标再动，节点也要跟随）
+  private applyMove(
+    s: Extract<Session, { kind: "move" }>,
+    p: { x: number; y: number },
+  ) {
+    if (s.group) {
+      // 组合移动：以整体框（成员并集 bounds）的四边/中线与外部节点对齐吸附，
+      // 全部组内成员（含被按住的主节点）不作为参考目标，避免内部基线；
+      // 全量拖拽位移 + 吸附修正统一应用到全部成员。
+      // 吸附基准框必须由各成员"按下时原始位置 + 本帧原始位移"构成——若混入
+      // 已被上一帧吸附修正过的当前位置，上一帧的修正量会泄漏进本帧的吸附
+      // 计算，吸附会在开/关之间震荡（参考线闪烁、整体位置抖动）
+      const exclude = new Set([s.shape, ...s.group.map((g) => g.shape)]);
+      const b0 = unionBounds([
+        {
+          x: s.origin.x,
+          y: s.origin.y,
+          width: s.shape.width,
+          height: s.shape.height,
+        },
+        ...s.group.map((g) => ({
+          x: g.x,
+          y: g.y,
+          width: g.shape.width,
+          height: g.shape.height,
+        })),
+      ]);
+      b0.x += p.x - s.start.x;
+      b0.y += p.y - s.start.y;
+      const box: Bounds = { ...b0 };
+      this.applySnap(box, exclude);
+      const mx = p.x - s.start.x + (box.x - b0.x);
+      const my = p.y - s.start.y + (box.y - b0.y);
+      s.shape.x = s.origin.x + mx;
+      s.shape.y = s.origin.y + my;
+      for (const g of s.group) {
+        g.shape.x = g.x + mx;
+        g.shape.y = g.y + my;
+      }
+    } else {
+      s.shape.x = s.origin.x + (p.x - s.start.x);
+      s.shape.y = s.origin.y + (p.y - s.start.y);
+      this.applySnap(s.shape);
+    }
+    this.deps.app.requestRender();
+  }
 
   // 交互会话进行中（undo/redo 拒绝执行的判定）
   get busy(): boolean {
@@ -271,46 +331,9 @@ export class FlowInteractions {
     const p = this.deps.app.camera.toWorld(e.clientX, e.clientY);
     if (s.kind === "move") {
       s.moved = true;
-      if (s.group) {
-        // 组合移动：以整体框（成员并集 bounds）的四边/中线与外部节点对齐吸附，
-        // 全部组内成员（含被按住的主节点）不作为参考目标，避免内部基线；
-        // 全量拖拽位移 + 吸附修正统一应用到全部成员。
-        // 吸附基准框必须由各成员"按下时原始位置 + 本帧原始位移"构成——若混入
-        // 已被上一帧吸附修正过的当前位置，上一帧的修正量会泄漏进本帧的吸附
-        // 计算，吸附会在开/关之间震荡（参考线闪烁、整体位置抖动）
-        const exclude = new Set([s.shape, ...s.group.map((g) => g.shape)]);
-        const b0 = unionBounds([
-          {
-            x: s.origin.x,
-            y: s.origin.y,
-            width: s.shape.width,
-            height: s.shape.height,
-          },
-          ...s.group.map((g) => ({
-            x: g.x,
-            y: g.y,
-            width: g.shape.width,
-            height: g.shape.height,
-          })),
-        ]);
-        b0.x += p.x - s.start.x;
-        b0.y += p.y - s.start.y;
-        const box: Bounds = { ...b0 };
-        this.applySnap(box, exclude);
-        const mx = p.x - s.start.x + (box.x - b0.x);
-        const my = p.y - s.start.y + (box.y - b0.y);
-        s.shape.x = s.origin.x + mx;
-        s.shape.y = s.origin.y + my;
-        for (const g of s.group) {
-          g.shape.x = g.x + mx;
-          g.shape.y = g.y + my;
-        }
-      } else {
-        s.shape.x = s.origin.x + (p.x - s.start.x);
-        s.shape.y = s.origin.y + (p.y - s.start.y);
-        this.applySnap(s.shape);
-      }
-      this.deps.app.requestRender();
+      // 边缘自动平移：记录指针位置并确保会话循环在跑（幂等，会话结束在 onUp 停止）
+      this.edgePan.start(e.clientX, e.clientY);
+      this.applyMove(s, p);
     } else if (s.kind === "resize") {
       applyResize(s.shape, s.handle, s.origin, p.x - s.start.x, p.y - s.start.y);
       this.deps.app.requestRender();
@@ -403,6 +426,8 @@ export class FlowInteractions {
     const s = this.session;
     if (!s) return;
     this.session = null;
+    // 交互会话结束：停止边缘自动平移（仅移动会话启动过，幂等）
+    this.edgePan.stop();
     this.deps.canvas.style.cursor = "";
     if (s.kind === "move") {
       this.guides = null;
