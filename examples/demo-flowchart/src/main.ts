@@ -1,6 +1,6 @@
 // 入口：挂载 canvas 并渲染一张示例流程图
-// 显式装配示例：宿主自建 App 并安装官方插件预设（@silker/preset 的 officialPlugins，
-// 与 FlowChart 便捷模式装配的集合同源），再交给 FlowChart 复用——应用层可自由增减/替换插件
+// 显式装配示例（starter-kit 模式）：宿主自建 App 并安装官方插件预设
+// （@silker/preset 的 officialPlugins），再交给 FlowChart 复用——应用层可自由增减/替换插件
 import { App } from "@silker/core";
 import { officialPlugins } from "@silker/preset";
 import { FlowChart, Shape, SHAPE_REGISTRY_CAPABILITY } from "@silker/flowchart";

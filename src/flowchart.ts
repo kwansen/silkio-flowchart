@@ -3,7 +3,6 @@ import type { ExportOptions, HistoryCapability, Plugin } from "@silker/core";
 import type { SelectionCapability, TextEditorCapability } from "@silker/core";
 import { selectionCapabilityKey, HISTORY_CAPABILITY } from "@silker/core";
 import { EXPORT_CAPABILITY, COMMAND_CAPABILITY, CANVAS_CLICK_CAPABILITY } from "@silker/core";
-import { officialPlugins } from "@silker/preset";
 import { BuiltinShapes, SHAPE_REGISTRY_CAPABILITY } from "./shape-registry";
 import type { ShapeRegistryCapability } from "./shape-registry";
 import { FlowEdge } from "./FlowEdge";
@@ -31,10 +30,10 @@ import {
 export interface FlowChartOptions {
   canvas: HTMLCanvasElement;
   data: FlowData;
-  // 显式装配点：传入宿主自建并装配好官方外部插件（视口/指针/导出/历史/命令/
-  // 编辑器/选中）的 App，本场景按能力键复用这些能力、只补齐自有插件；
-  // 缺省时便捷模式自建 App 并装配同一套官方插件（开箱即用）
-  app?: App;
+  // 显式装配点（starter-kit 模式）：传入宿主自建并装配好官方外部插件（视口/指针/
+  // 导出/历史/命令/编辑器/选中，通常经 @silker/preset 的 officialPlugins()）的
+  // App，本场景按能力键复用这些能力、只补齐自有插件；场景包不依赖 preset
+  app: App;
   // 数据变化回调：新增 / 删除 / 移动 / 连线 / 文本编辑结束，当前数据用 toJSON() 导出
   onChange?: (type: FlowChangeType) => void;
   // 额外装配的插件（在官方形状/吸附插件之后、初始数据 load 之前安装）：
@@ -84,16 +83,10 @@ export class FlowChart {
 
   constructor(private options: FlowChartOptions) {
     this.onChange = options.onChange;
-    if (options.app) {
-      // 显式装配模式：宿主自建 App 并装配官方外部插件（通常用 @silker/preset 的
-      // officialPlugins()），本场景按能力键复用这些能力，只补齐自有插件
-      this.app = options.app;
-    } else {
-      // 便捷模式：自建 App 并安装官方外部插件预设（开箱即用，与显式装配同一套，
-      // 集合与顺序的单一事实来源在 @silker/preset）
-      this.app = new App(options.canvas);
-      for (const p of officialPlugins()) this.app.use(p);
-    }
+    // 显式装配（starter-kit 模式）：宿主自建 App 并装配官方外部插件（通常用
+    // @silker/preset 的 officialPlugins()），本场景按能力键复用这些能力，
+    // 只补齐自有插件；场景包不依赖 preset，装配缺口由 require 兜底报错
+    this.app = options.app;
     this.history = this.app.require(HISTORY_CAPABILITY);
     // 安装官方形状/吸附/边路由插件（自注册各自能力），再装配应用层传入的第三方
     // 插件（可注册/覆盖形状、同名覆盖吸附策略与边路由，初始数据 load 前生效）；
@@ -205,7 +198,7 @@ export class FlowChart {
     this.cleanups.push(this.interactions.bind(options.canvas));
   }
 
-  // 装配文本编辑器：按能力键取回官方预设（或宿主显式装配）的实例并接线场景回调
+  // 装配文本编辑器：按能力键取回宿主装配（通常为官方预设）的实例并接线场景回调
   private setupEditor(): TextEditorCapability {
     const editor = this.app.require(TEXT_EDITOR_CAPABILITY);
     // 输入实时同步：文本重测后重新居中（不改形状尺寸），覆盖层跟随新位置
