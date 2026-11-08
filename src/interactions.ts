@@ -360,13 +360,29 @@ export class FlowInteractions {
     const p = this.deps.app.camera.toWorld(e.clientX, e.clientY);
     if (s.kind === "move") {
       s.moved = true;
+      // 拖拽即结束进行中的编辑会话：提交文本、文字交还 canvas 渲染（输入框
+      // 关闭）。否则输入框滞留在按下时的位置，不跟随被拖节点。结束一次后
+      // editing 为 null，后续帧自然跳过
+      if (this.deps.editing.editing) {
+        this.deps.editing.finishEdit();
+        this.deps.editor.hide();
+      }
       // 边缘自动平移：记录指针位置并确保会话循环在跑（幂等，会话结束在 onUp 停止）
       this.edgePan.start(e.clientX, e.clientY);
       this.applyMove(s, p);
     } else if (s.kind === "resize") {
+      // 缩放即结束编辑（同移动：输入框不跟随形状变化）
+      if (this.deps.editing.editing) {
+        this.deps.editing.finishEdit();
+        this.deps.editor.hide();
+      }
       applyResize(s.shape, s.handle, s.origin, p.x - s.start.x, p.y - s.start.y);
       this.deps.app.requestRender();
     } else if (s.kind === "group-resize") {
+      if (this.deps.editing.editing) {
+        this.deps.editing.finishEdit();
+        this.deps.editor.hide();
+      }
       applyGroupResize(s.handle, s.origin, s.origins, p.x - s.start.x, p.y - s.start.y);
       this.deps.app.requestRender();
     } else if (s.kind === "link") {
@@ -398,6 +414,11 @@ export class FlowInteractions {
       }
       this.deps.app.requestRender();
     } else if (s.kind === "edge-move") {
+      // 拖拽重接即结束连线标签编辑（同移动：输入框不跟随连线变化）
+      if (this.deps.editing.editing) {
+        this.deps.editing.finishEdit();
+        this.deps.editor.hide();
+      }
       // 原连线被拖端跟随光标：吸附时落在目标手柄上，自由拖拽时按出口方向
       // 与光标位置确定虚拟进入方向。任意节点均可吸附（含本连线两端节点，
       // 可调整接入边或形成自环）
