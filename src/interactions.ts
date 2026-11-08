@@ -261,9 +261,11 @@ export class FlowInteractions {
 
   private onMove(e: MouseEvent) {
     const s = this.session;
-    // 无会话时做悬停反馈：缩放手柄/边线/端口/形状体/连线分别给对应光标
+    // 无会话时做悬停反馈：缩放手柄/边线/端口/形状体/连线分别给对应光标。
+    // 框选会话中跳过：悬浮命中是 O(n) 全树遍历 + O(m) 连线扫掠（每事件执行），
+    // 橡皮筋扫过连线时 hoverEdge 翻转还会触发全量重光栅化——大场景框选卡顿主因
     if (!s) {
-      this.deps.hover.track(e);
+      if (!this.deps.sel.marqueeActive) this.deps.hover.track(e);
       return;
     }
     const p = this.deps.app.camera.toWorld(e.clientX, e.clientY);
