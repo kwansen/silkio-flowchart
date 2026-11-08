@@ -220,6 +220,10 @@ export class FlowInteractions {
       const edge = selEdgeDown;
       const which = edgeHandleHit(edge, p, scale);
       if (which) {
+        // 护住激活覆盖层焦点：mousedown 的默认动作（焦点移向不可聚焦的 canvas，
+        // 即回落 body）会 blur 覆盖层 → TextEditor 切回隐藏态，重接结束后打字
+        // 不再直接进入标签。preventDefault 只拦焦点移动，拖拽重接不受影响
+        e.preventDefault();
         // 直接拖拽原连线：被拖端进入拖拽态，路由以光标为虚拟端口
         const fixedDir = which === "from" ? edge.toDir : edge.fromDir;
         const fixedPort =
@@ -293,6 +297,12 @@ export class FlowInteractions {
     // 已选中的连线再次点击（双击语义）时抬起进入标签编辑
     const hitLine = hitEdge(this.deps.model.edges, p, scale);
     if (hitLine) {
+      // 关键：连线激活在 mousedown 内同步执行（select → activateLabel →
+      // editor.start 的 el.focus 已在本事件处理器中完成）。若放行 mousedown
+      // 默认动作，焦点会在处理器返回后被浏览器夺回 body，覆盖层 blur 切回
+      // 隐藏态，激活态打字全部落空。mindmap 在 click（mouseup 后）里激活
+      // 无此竞争，此处必须显式 preventDefault 护住覆盖层焦点
+      e.preventDefault();
       const already =
         this.deps.sel.items.length === 1 && this.deps.sel.items[0] === hitLine;
       this.select(hitLine);
@@ -669,10 +679,15 @@ export class FlowInteractions {
       sel.selected = true;
       // 激活的连线提到连线层最上再渲染，避免激活样式被其他连线覆盖
       if (sel instanceof FlowEdge) this.deps.model.raiseEdgeTop(sel);
+      // 单选连线：挂载标签激活覆盖层（空缓冲常驻接收打字/IME，打字即编辑）；
+      // 单选形状：摘除连线标签覆盖层（形状仍走点击/双击进入编辑）
+      if (sel instanceof FlowEdge) this.deps.editing.activateLabel(sel);
+      else this.deps.editing.deactivateLabel();
     } else {
       if (!this.deps.sel.items.length) return;
       for (const it of this.deps.sel.items) it.selected = false;
       this.deps.sel.clear();
+      this.deps.editing.deactivateLabel();
     }
     this.deps.app.requestRender();
   }

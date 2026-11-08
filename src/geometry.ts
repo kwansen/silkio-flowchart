@@ -141,7 +141,8 @@ export function edgeHit(
   return null;
 }
 
-// 命中连线：距折线各段容差内命中（世界坐标容差）
+// 命中连线：距折线各段容差内命中；可见标签的白底盒同样算连线的一部分
+//（标签盒遮住线体且上下沿超出线宽，仅按线体容差时点击标签上下边缘会落空）
 export function hitEdge(
   edges: FlowEdge[],
   p: { x: number; y: number },
@@ -150,6 +151,15 @@ export function hitEdge(
   const tol = EDGE_TOLERANCE / scale;
   for (const edge of edges) {
     if (edge.hitPoint(p, tol)) return edge;
+    const l = edge.label;
+    if (
+      l.visible &&
+      p.x >= l.x - tol &&
+      p.x <= l.x + l.width + tol &&
+      p.y >= l.y - tol &&
+      p.y <= l.y + l.height + tol
+    )
+      return edge;
   }
   return null;
 }

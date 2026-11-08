@@ -147,6 +147,8 @@ export class FlowChart {
       editor: this.editor,
       history: this.history,
       onChange: this.onChange,
+      // 激活态连线标签上按 Delete/Backspace：覆盖层接管按键后转回门面删除
+      onDelete: () => this.deleteSelected(),
     });
     this.model = new FlowModel({
       app: this.app,
@@ -273,6 +275,8 @@ export class FlowChart {
       if (hits.length === 1) this.interactions.select(hits[0]);
       else if (hits.length > 1) {
         selection.set(hits);
+        // 框选结果为形状组合：摘除可能常驻的连线标签激活覆盖层
+        this.editing.deactivateLabel();
         this.app.requestRender();
       }
     };
@@ -322,6 +326,8 @@ export class FlowChart {
     for (const it of this.sel.items) it.selected = false;
     this.sel.set(shapes);
     this.hover.clearPort();
+    // 全选为形状组合：摘除可能常驻的连线标签激活覆盖层
+    this.editing.deactivateLabel();
     this.app.requestRender();
   }
 
@@ -420,6 +426,7 @@ export class FlowChart {
     for (const it of this.sel.items) it.selected = false;
     this.sel.set(shapes);
     this.hover.clearPort();
+    this.editing.deactivateLabel();
     this.app.requestRender();
     this.onChange?.("add");
   }

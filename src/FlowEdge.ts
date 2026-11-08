@@ -61,8 +61,9 @@ export class FlowEdge extends Edge {
     const horizontal = Math.abs(dx) >= Math.abs(dy)
     this.fromDir = hints.from ?? (horizontal ? (dx >= 0 ? 'right' : 'left') : (dy >= 0 ? 'bottom' : 'top'))
     this.toDir = hints.to ?? (horizontal ? (dx >= 0 ? 'left' : 'right') : (dy >= 0 ? 'top' : 'bottom'))
-    // 标签：自动定宽单行文本，白底盒遮线；子节点随本节点渲染（本节点变换恒为
-    // 单位阵，子节点本地坐标即世界坐标）。空文本置 visible=false 不画白盒
+    // 标签：自动定宽文本（上限 200，超出自动换行），白底盒遮线；子节点随本节点
+    // 渲染（本节点变换恒为单位阵，子节点本地坐标即世界坐标）。空文本置 visible=false
+    // 不画白盒。widthRange 同步约束编辑覆盖层宽度（TextEditorView 按其设 min/max-width）
     this.label = new Text({
       text: '',
       fill: '#475569',
@@ -71,6 +72,7 @@ export class FlowEdge extends Edge {
       align: 'center',
       lineHeight: 1.4,
       padding: [2, 6],
+      widthRange: [0, 200],
       boxStyle: { fill: '#ffffff', radius: 4 },
     })
     this.label.visible = false
