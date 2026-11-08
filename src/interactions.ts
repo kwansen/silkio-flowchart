@@ -262,6 +262,12 @@ export class FlowInteractions {
     }
     const hit = hitShape(this.deps.app.children, p);
     if (hit) {
+      // 按下在已单选节点上：记录屏幕坐标，抬起未拖动时进入编辑（拖拽仍优先）。
+      // 多选组内按下不记录（未拖动的抬起塌缩为单选，不进编辑）
+      const press =
+        this.deps.sel.items.length === 1 && this.deps.sel.items[0] === hit
+          ? { x: e.clientX, y: e.clientY }
+          : undefined;
       if (this.deps.sel.items.includes(hit)) {
         // 组内形状：整体移动，保持多选（单击不动则抬起时塌缩为单选）
         this.session = {
@@ -270,16 +276,12 @@ export class FlowInteractions {
           start: p,
           origin: { x: hit.x, y: hit.y },
           moved: false,
+          press,
           group: selShapes(this.deps.sel)
             .filter((s) => s !== hit)
             .map((s) => ({ shape: s, x: s.x, y: s.y })),
         };
       } else {
-        // 按下在已选中节点上：记录屏幕坐标，抬起未拖动时进入编辑（拖拽仍优先）
-        const press =
-          hit === selShape(this.deps.sel)
-            ? { x: e.clientX, y: e.clientY }
-            : undefined;
         this.select(hit);
         this.session = {
           kind: "move",
