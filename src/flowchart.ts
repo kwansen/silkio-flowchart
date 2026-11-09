@@ -723,6 +723,8 @@ export class FlowChart {
   // 宿主自建的 App 与官方插件（显式装配）不受影响，可继续复用
   destroy() {
     this.disposed = true;
+    // 历史栈随场景废弃：栈内命令闭包引用本场景形状/模型，场景销毁后命令失效
+    this.history.clear?.();
     this.cleanups.forEach((fn) => fn());
     this.cleanups = [];
     this.editor.onInput = undefined;
