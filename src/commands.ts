@@ -80,7 +80,6 @@ export interface FlowchartCommandHooks {
   editing(): boolean; // 文本编辑会话进行中
   editorFocused(): boolean; // 编辑器持焦（按键属于输入）
   hasSelection(): boolean; // 当前有选中项
-  canPaste(): boolean; // 剪贴板有内容可粘贴
   undo(): void;
   redo(): void;
   deleteSelected(): void;
@@ -91,11 +90,12 @@ export interface FlowchartCommandHooks {
 
 // 注册流程图命令并绑定默认键位：撤销/重做/删除，document keydown 由命令
 // 插件统一分发；应用层与第三方可按能力键复用命令或重绑键位。
-// 分发守卫同 mindmap keymapGuard：编辑会话中按键属于输入，一律不拦；激活态
-// 常驻覆盖层持焦（空缓冲接收打字），无修饰键按键属于打字唤醒交由覆盖层，
-// Ctrl/Cmd/Alt 组合键（复制/粘贴/撤销等）仍走命令分发——否则激活态下
-// mod+c/mod+v 被守卫拦截，原生行为落到空覆盖层上（复制得到空文本、
-// 粘贴把系统剪贴板文字写进节点）
+// 复制/粘贴不走 keydown 分发（键位不绑定）：原生 copy/paste 剪贴板事件承载
+// （Clipboard 插件分发，编辑态自动放行文本级复制粘贴），命令仅保留 id 供
+// 工具栏/菜单等程序化入口复用。
+// 分发守卫：编辑会话中按键属于输入，一律不拦；激活态常驻覆盖层持焦（空缓冲
+// 接收打字），无修饰键按键属于打字唤醒交由覆盖层，Ctrl/Cmd/Alt 组合键
+// （撤销/全选等）仍走命令分发
 export function bindFlowchartCommands(
   commands: CommandCapability,
   hooks: FlowchartCommandHooks,
@@ -136,15 +136,12 @@ export function bindFlowchartCommands(
   commands.register({
     id: "flowchart.paste",
     title: "粘贴",
-    enabled: () => hooks.canPaste(),
     run: () => hooks.paste(),
   });
   commands.bind("mod+z", "flowchart.undo");
   commands.bind("mod+shift+z", "flowchart.redo");
   commands.bind("mod+y", "flowchart.redo");
   commands.bind("mod+a", "flowchart.selectAll");
-  commands.bind("mod+c", "flowchart.copy");
-  commands.bind("mod+v", "flowchart.paste");
   commands.bind("delete", "flowchart.delete");
   commands.bind("backspace", "flowchart.delete");
 }
