@@ -1,4 +1,4 @@
-﻿import { App, VIEWPORT_CAPABILITY, TEXT_EDITOR_CAPABILITY } from "@silker/core";
+﻿﻿import { App, VIEWPORT_CAPABILITY, TEXT_EDITOR_CAPABILITY } from "@silker/core";
 import type {
   ExportOptions,
   HistoryCapability,
