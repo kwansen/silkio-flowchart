@@ -149,6 +149,8 @@ export class FlowChart {
           serialize: () => this.serializeSelection(),
           deserialize: (entry) => this.pasteFromEntry(entry),
           pasteText: (text) => this.pasteText(text),
+          // 编辑会话中 copy/paste 事件放行原生文本行为（常驻覆盖层不能凭元素类型判定）
+          isEditing: () => this.editing.editing !== null,
         }),
       );
     }

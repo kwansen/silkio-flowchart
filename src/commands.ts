@@ -90,9 +90,11 @@ export interface FlowchartCommandHooks {
 
 // 注册流程图命令并绑定默认键位：撤销/重做/删除，document keydown 由命令
 // 插件统一分发；应用层与第三方可按能力键复用命令或重绑键位。
-// 复制/粘贴不走 keydown 分发（键位不绑定）：原生 copy/paste 剪贴板事件承载
-// （Clipboard 插件分发，编辑态自动放行文本级复制粘贴），命令仅保留 id 供
-// 工具栏/菜单等程序化入口复用。
+// 复制绑定 mod+c：命令经剪贴板能力写系统剪贴板（Chrome 无文本选区时 Ctrl+C
+// 不派发 copy 事件，需命令路径兜底）；粘贴不绑 mod+v——走原生 paste 事件
+// （Ctrl+V 必发、clipboardData 同步可读、零权限，绑定命令反而 preventDefault
+// 抑制事件）。右键菜单复制粘贴走 copy/paste 事件（Clipboard 插件分发，编辑态
+// 自动放行文本级复制粘贴）。命令 id 同时供工具栏/菜单等程序化入口复用。
 // 分发守卫：编辑会话中按键属于输入，一律不拦；激活态常驻覆盖层持焦（空缓冲
 // 接收打字），无修饰键按键属于打字唤醒交由覆盖层，Ctrl/Cmd/Alt 组合键
 // （撤销/全选等）仍走命令分发
@@ -142,6 +144,7 @@ export function bindFlowchartCommands(
   commands.bind("mod+shift+z", "flowchart.redo");
   commands.bind("mod+y", "flowchart.redo");
   commands.bind("mod+a", "flowchart.selectAll");
+  commands.bind("mod+c", "flowchart.copy");
   commands.bind("delete", "flowchart.delete");
   commands.bind("backspace", "flowchart.delete");
 }
