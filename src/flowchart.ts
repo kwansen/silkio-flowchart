@@ -10,7 +10,7 @@ import type { SelectionCapability, TextEditorCapability } from "@silker/core";
 import { selectionCapabilityKey, HISTORY_CAPABILITY } from "@silker/core";
 import { EXPORT_CAPABILITY, COMMAND_CAPABILITY, CANVAS_CLICK_CAPABILITY } from "@silker/core";
 import { compose } from "@silker/core";
-import { CLIPBOARD_CAPABILITY } from "@silker/core";
+import { CLIPBOARD_CAPABILITY, hasTextSelection } from "@silker/core";
 import type { ClipboardCapability, ClipboardEntry } from "@silker/core";
 import { BuiltinShapes, SHAPE_REGISTRY_CAPABILITY } from "./shape-registry";
 import type { ShapeRegistryCapability } from "./shape-registry";
@@ -146,11 +146,22 @@ export class FlowChart {
       this.cleanups.push(
         this.clipboard.register({
           kind: "flowchart",
-          serialize: () => this.serializeSelection(),
+          // copy 全权决策（场景 UX，机制层不窥探选区/编辑状态）：编辑会话中有
+          // 文字选区 → 原生复制文字；其余 → 序列化选中形状
+          onCopy: ({ target }) => {
+            if (this.editing.editing && target?.isContentEditable && hasTextSelection(target)) {
+              return "native";
+            }
+            return this.serializeSelection();
+          },
           deserialize: (entry) => this.pasteFromEntry(entry),
-          pasteText: (text) => this.pasteText(text),
-          // 编辑会话中 copy/paste 事件放行原生文本行为（常驻覆盖层不能凭元素类型判定）
-          isEditing: () => this.editing.editing !== null,
+          // 纯文本粘贴全权决策：编辑会话/交互进行中放行（编辑覆盖层的粘贴归
+          // TextEditor 元素级处理），其余在视口中心新建带文本矩形
+          onPasteText: ({ text }) => {
+            if (!text || this.editing.editing || this.interactions.busy) return "native";
+            this.pasteText(text);
+            return "handled";
+          },
         }),
       );
     }
