@@ -39,8 +39,9 @@ export class FlowEditing {
   };
 
   constructor(private deps: FlowEditingDeps) {
-    // 覆盖层挂载即绑定唤醒键（el 每次挂载重建，无监听堆积）
-    deps.editor.onEditStart = (el, text) => this.bindWakeKeys(el, text);
+    // 覆盖层挂载即绑定唤醒键（el 每次挂载重建，无监听堆积）。
+    // 回调载荷为能力契约的 EditableText，本场景以具体 Text 节点工作，在接线处收窄
+    deps.editor.onEditStart = (el, text) => this.bindWakeKeys(el, text as Text);
   }
 
   // 进入编辑：point 为按下时屏幕坐标，编辑器经浏览器命中测试把光标折叠到点击处
