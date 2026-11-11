@@ -11,7 +11,10 @@
   "dependencies": {
     "@silker/core": "workspace:*",
     "@silker/flowchart": "workspace:*",
-    "@silker/preset": "workspace:*"
+    "@silker/preset": "workspace:*",
+    "@tailwindcss/vite": "^4.3.5",
+    "comark": "^0.9.0",
+    "tailwindcss": "^4.3.5"
   },
   "devDependencies": {
     "typescript": "~6.0.2",
