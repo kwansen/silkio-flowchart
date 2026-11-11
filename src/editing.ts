@@ -97,6 +97,9 @@ export class FlowEditing {
     this.deps.editor.start(target.text);
     this.activated = target;
     this.editingOld = { target, text: target.text.text };
+    // 目标越出屏幕时平移视口（原 text-editor 插件行为上移至场景）：先对齐
+    // 覆盖层再平移，相机变化经插件视口订阅自动重新对齐
+    this.scrollTargetIntoView(target);
   }
 
   // 取消激活：移除覆盖层；编辑会话若在该目标上进行，经 stop 的 onEditEnd
@@ -145,5 +148,21 @@ export class FlowEditing {
       if (child instanceof FlowEdge && child.label === text) return child;
     }
     return null;
+  }
+
+  // 目标越出屏幕时平移视口：几何与边界判断收口于相机 scrollIntoView，
+  // 此处只提供目标文本的世界包围盒（形状/连线标签均为顶层节点，世界即本地坐标）
+  private scrollTargetIntoView(target: EditTarget) {
+    const t = target.text;
+    const p = t.getWorldPoint();
+    if (
+      this.deps.app.camera.scrollIntoView({
+        minX: p.x,
+        minY: p.y,
+        maxX: p.x + t.width,
+        maxY: p.y + t.height,
+      })
+    )
+      this.deps.app.requestRender();
   }
 }
