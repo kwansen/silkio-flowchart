@@ -7,7 +7,7 @@ import type { HistoryCommand, SerializedCommand } from "@silker/core";
 import type { FlowEdge, PortDir } from "./FlowEdge";
 import type { Shape } from "./Shape";
 import type { Bounds } from "./snap";
-import type { FlowNodeData } from "./data";
+import type { FlowData, FlowNodeData } from "./data";
 
 // 形状数据快照：id/几何/文本（与 model.toJSON 的节点条目同构，JSON 安全），
 // 供命令载荷内嵌，导入端经形状注册表重建。
@@ -45,6 +45,17 @@ export interface ConnectPayload {
   fromDir: PortDir;
   toDir: PortDir;
   text?: string;
+}
+// 整图替换载荷（AI 生成 / 程序化重新布局）：前后两份画布快照 + 连线运行时 id。
+// 快照是纯数据，undo/redo 整体复原；edgeIds 让历史导入时连线可按原 id 重建
+//（FlowData 的边本身不带 id），与 data.edges 一一对应
+export interface RenderSnapshot {
+  data: FlowData;
+  edgeIds: string[];
+}
+export interface RenderPayload {
+  before: RenderSnapshot;
+  after: RenderSnapshot;
 }
 interface ShapeRectData {
   shapeId: string;

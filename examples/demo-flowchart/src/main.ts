@@ -3,8 +3,8 @@
 // （@silker/preset 的 officialPlugins），再交给 FlowChart 复用——应用层可自由增减/替换插件
 import { App } from "@silker/core";
 import { officialPlugins } from "@silker/preset";
-import { FlowChart, Shape, SHAPE_REGISTRY_CAPABILITY } from "@silker/flowchart";
-import type { Plugin, ShapeOptions, ShapeStyle } from "@silker/flowchart";
+import { FlowChart, Shape, SHAPE_REGISTRY_CAPABILITY, defaultAIFlowPrompt } from "@silker/flowchart";
+import type { Plugin, ShapeOptions, ShapeStyle, AIFlowGenerate } from "@silker/flowchart";
 import type { FlowData, ShapeKind } from "@silker/flowchart";
 
 // ── 第三方形状扩展示例：便签（折角矩形，经形状注册表插件注册）──
@@ -73,6 +73,59 @@ const data: FlowData = {
   ],
 };
 
+// ── AI 生成适配器（宿主注入，OpenAI 兼容接口）──
+// 与 mindmap demo 同款：配置存 localStorage，包内 defaultAIFlowPrompt 渲染提示词，
+// 返回的语义图 JSON 由 FlowChart.generate 解析 + 自动布局 + 整图原子替换。
+// 注意：浏览器直连要求服务端允许 CORS，否则需经本地代理转发。
+interface AIConfig {
+  baseURL: string;
+  apiKey: string;
+  model: string;
+}
+const AI_CONFIG_KEY = "flowchart-ai-config";
+const aiConfig: AIConfig = (() => {
+  try {
+    return {
+      baseURL: "",
+      apiKey: "",
+      model: "",
+      ...JSON.parse(localStorage.getItem(AI_CONFIG_KEY) ?? "{}"),
+    };
+  } catch {
+    return { baseURL: "", apiKey: "", model: "" };
+  }
+})();
+const aiGenerate: AIFlowGenerate = async (req) => {
+  const { baseURL, apiKey, model } = aiConfig;
+  if (!baseURL || !apiKey || !model) {
+    throw new Error("请先点击「设置」填写 AI 服务配置");
+  }
+  const res = await fetch(baseURL.replace(/\/+$/, "") + "/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content: defaultAIFlowPrompt(req) }],
+      temperature: 0.3,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `AI 服务请求失败（HTTP ${res.status}）${text ? `：${text.slice(0, 160)}` : ""}`,
+    );
+  }
+  const json = await res.json();
+  const content = json?.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || !content.trim()) {
+    throw new Error("AI 服务返回内容为空");
+  }
+  return content;
+};
+
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 
 // 显式装配：自建 App 并安装官方插件预设（集合与顺序的单一事实来源在 @silker/preset），
@@ -86,6 +139,8 @@ const flowchart = new FlowChart({
   data,
   // 第三方形状插件经 plugins 选项装配（在初始数据 load 之前安装）
   plugins: [noteShapes],
+  // AI 生成适配器：模型只输出语义图，坐标与端口方向由包内布局器计算
+  ai: aiGenerate,
   // 数据变化（新增/删除/移动/连线/编辑）时打印当前数据 JSON
   onChange: (type) => {
     console.log(`[FlowChart] ${type}`, JSON.stringify(flowchart.toJSON()));
@@ -206,6 +261,48 @@ document
     a.click();
     URL.revokeObjectURL(url);
   });
+
+// ── AI 面板：服务配置 / 指令输入 / 生成反馈 ──
+const aiSettings = document.getElementById("ai-settings") as HTMLDivElement;
+const aiBaseURL = document.getElementById("ai-base-url") as HTMLInputElement;
+const aiApiKey = document.getElementById("ai-api-key") as HTMLInputElement;
+const aiModel = document.getElementById("ai-model") as HTMLInputElement;
+const aiPrompt = document.getElementById("ai-prompt") as HTMLTextAreaElement;
+const aiGenerateBtn = document.getElementById("ai-generate") as HTMLButtonElement;
+const aiStatus = document.getElementById("ai-status") as HTMLSpanElement;
+aiBaseURL.value = aiConfig.baseURL;
+aiApiKey.value = aiConfig.apiKey;
+aiModel.value = aiConfig.model;
+
+document.getElementById("ai-settings-toggle")!.addEventListener("click", () => {
+  aiSettings.hidden = !aiSettings.hidden;
+});
+document.getElementById("ai-save")!.addEventListener("click", () => {
+  aiConfig.baseURL = aiBaseURL.value.trim();
+  aiConfig.apiKey = aiApiKey.value.trim();
+  aiConfig.model = aiModel.value.trim();
+  localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(aiConfig));
+  aiSettings.hidden = true;
+  aiStatus.textContent = "配置已保存（仅存本地浏览器）";
+});
+aiGenerateBtn.addEventListener("click", async () => {
+  const prompt = aiPrompt.value.trim();
+  if (!prompt || aiGenerateBtn.disabled) return;
+  aiGenerateBtn.disabled = true;
+  aiStatus.textContent = "生成中…";
+  try {
+    // 一次 generate = 语义图解析 + 自动布局 + 整图替换（一次 Ctrl+Z 可整体撤销）
+    const result = await flowchart.generate(prompt);
+    aiStatus.textContent = result.answer
+      ? result.answer
+      : `已生成 ${result.graph.nodes.length} 个节点、${result.graph.edges.length} 条连线（Ctrl+Z 可撤销）`;
+    refreshToolbar();
+  } catch (err) {
+    aiStatus.textContent = `失败：${err instanceof Error ? err.message : String(err)}`;
+  } finally {
+    aiGenerateBtn.disabled = false;
+  }
+});
 
 // 临时调试：暴露实例供浏览器自动化测试定位节点（验证后移除）
 (window as any).__flowchart = flowchart;

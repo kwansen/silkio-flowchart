@@ -19,7 +19,7 @@ import type { Shape } from "./Shape";
 import type { FlowNodeData } from "./data";
 import type { EdgeRouterCapability } from "./edge-router";
 import type { FlowModel } from "./model";
-import type { MovePayload, ResizePayload, ReconnectPayload, TextPayload, EdgeTextPayload, ConnectPayload } from "./commands";
+import type { MovePayload, ResizePayload, ReconnectPayload, TextPayload, EdgeTextPayload, ConnectPayload, RenderPayload, RenderSnapshot } from "./commands";
 
 export interface FlowchartCodecDeps {
   model: FlowModel;
@@ -153,6 +153,8 @@ export function createFlowchartCodec(deps: FlowchartCodecDeps) {
         return decodeDelete(s.payload as DeletePayload);
       case "flowchart.replace":
         return decodeReplace(s.payload as ReplacePayload);
+      case "flowchart.render":
+        return decodeRender(s.payload as RenderPayload);
       default:
         return null;
     }
@@ -418,6 +420,47 @@ export function createFlowchartCodec(deps: FlowchartCodecDeps) {
       redo: () => model.swapShape(old, shape),
       undo: () => model.swapShape(shape, old),
       toJSON: () => ({ kind: "flowchart.replace", payload: p }),
+    };
+  }
+
+  // 整图替换（AI 生成）：前后快照各自复活为形状/连线实例集合，redo/undo
+  // 整体顶替。形状按 id + 内嵌数据重建（脱离树的旧图靠 data 快照复活），
+  // 连线按 edgeIds 复用同一实例；端口方向与标签文本随快照还原
+  function decodeRender(p: RenderPayload): HistoryCommand | null {
+    const revive = (
+      snap: RenderSnapshot,
+    ): { shapes: Shape[]; edges: FlowEdge[] } | null => {
+      const shapes: Shape[] = [];
+      for (const node of snap.data.nodes) {
+        const shape = resolveShape(node.id, node);
+        if (!shape) return null;
+        shapes.push(shape);
+      }
+      const byId = new Map(shapes.map((s) => [s.id as string, s]));
+      const edges: FlowEdge[] = [];
+      snap.data.edges.forEach((e, i) => {
+        const id = snap.edgeIds[i];
+        if (!id || !byId.has(e.from) || !byId.has(e.to)) return;
+        const edge = resolveEdge(
+          id,
+          e.from,
+          e.to,
+          e.fromDir as PortDir,
+          e.toDir as PortDir,
+          e.text,
+        );
+        if (edge) edges.push(edge);
+      });
+      return { shapes, edges };
+    };
+    const before = revive(p.before);
+    const after = revive(p.after);
+    if (!before || !after) return null;
+    return {
+      type: "ai",
+      redo: () => model.replaceAll(after.shapes, after.edges),
+      undo: () => model.replaceAll(before.shapes, before.edges),
+      toJSON: () => ({ kind: "flowchart.render", payload: p }),
     };
   }
 

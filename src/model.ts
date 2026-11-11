@@ -82,6 +82,22 @@ export class FlowModel {
     this.deps.app.requestRender();
   }
 
+  // 整图替换：摘除当前全部形状与连线，挂上给定实例集合。
+  // 供 AI 生成/程序化重排的原子命令使用——保留实例引用，undo 后旧历史命令
+  // 仍能命中同一对象；连线经 insertEdge 保证画在形状层之下
+  replaceAll(shapes: Shape[], edges: FlowEdge[]) {
+    for (const edge of this.edges) this.removeTop(edge);
+    for (const shape of this.shapes.values()) this.removeTop(shape);
+    this.edges = [];
+    this.shapes.clear();
+    for (const shape of shapes) this.registerShape(shape);
+    for (const edge of edges) {
+      this.edges.push(edge);
+      this.insertEdge(edge);
+    }
+    this.deps.app.requestRender();
+  }
+
   // 按注册表创建形状：编程路径（addNode/replaceSelected/快速建节点）的 kind
   // 来自类型化 API 或既有节点，未注册属于编程错误，fail fast
   createShape(kind: ShapeKind, options: ShapeOptions): Shape {

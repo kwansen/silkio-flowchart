@@ -43,3 +43,29 @@ export type {
   FlowData,
   FlowChangeType,
 } from './data'
+// AI 生成：语义图协议（LLM 只输出拓扑语义）/ 默认提示词 / 容错解析 /
+// 确定性 DAG 自动布局（把语义图编译成带 x/y 与端口方向的 FlowData）
+export {
+  defaultAIFlowPrompt,
+  normalizeAIFlowGraph,
+  parseAIFlowResponse,
+  inferFlowShape,
+  toSemanticGraph,
+} from './ai-protocol'
+export type {
+  AIFlowRole,
+  AIFlowNode,
+  AIFlowEdge,
+  AIFlowGraph,
+  NormalizedFlowNode,
+  NormalizedFlowGraph,
+  AIFlowTurn,
+  AIFlowEditRequest,
+  AIFlowGenerate,
+  AIFlowRunOptions,
+  AIFlowRunResult,
+} from './ai-protocol'
+export { layoutFlowGraph } from './auto-layout'
+export type { FlowLayoutDirection, FlowLayoutOptions } from './auto-layout'
+export { FLOW_AUTO_LAYOUT_CAPABILITY } from './flow-layout-capability'
+export type { FlowAutoLayoutCapability } from './flow-layout-capability'

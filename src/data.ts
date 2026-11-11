@@ -41,5 +41,5 @@ export interface FlowData {
   edges: FlowEdgeData[]
 }
 
-// 数据变化类型：新增节点 / 删除节点 / 拖拽移动 / 拖拽缩放 / 新建连线 / 重接连线端 / 文本编辑结束 / 替换形状
-export type FlowChangeType = 'add' | 'delete' | 'move' | 'resize' | 'connect' | 'reconnect' | 'text' | 'replace'
+// 数据变化类型：新增节点 / 删除节点 / 拖拽移动 / 拖拽缩放 / 新建连线 / 重接连线端 / 文本编辑结束 / 替换形状 / AI 生成整图替换
+export type FlowChangeType = 'add' | 'delete' | 'move' | 'resize' | 'connect' | 'reconnect' | 'text' | 'replace' | 'ai'

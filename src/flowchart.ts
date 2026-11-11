@@ -17,8 +17,20 @@ import type { ShapeRegistryCapability } from "./shape-registry";
 import { FlowEdge } from "./FlowEdge";
 import type { FlowEdgeHints, PortDir } from "./FlowEdge";
 import type { Shape } from "./Shape";
-import type { FlowChangeType, FlowData, FlowNodeData, ShapeKind } from "./data";
+import type { FlowChangeType, FlowData, FlowEdgeData, FlowNodeData, ShapeKind } from "./data";
 import type { Bounds } from "./snap";
+import type { RenderPayload } from "./commands";
+import type {
+  AIFlowEditRequest,
+  AIFlowGenerate,
+  AIFlowGraph,
+  AIFlowRunOptions,
+  AIFlowRunResult,
+} from "./ai-protocol";
+import { parseAIFlowResponse, toSemanticGraph } from "./ai-protocol";
+import { layoutFlowGraph } from "./auto-layout";
+import type { FlowLayoutOptions } from "./auto-layout";
+import { FLOW_AUTO_LAYOUT_CAPABILITY } from "./flow-layout-capability";
 import { BuiltinSnap, SNAP_CAPABILITY } from "./snap-capability";
 import type { SnapCapability } from "./snap-capability";
 import { BuiltinEdgeRouter, EDGE_ROUTER_CAPABILITY } from "./edge-router";
@@ -52,6 +64,11 @@ export interface FlowChartOptions {
   // 第三方形状插件经此注册自定义形状，同名能力可覆盖官方吸附策略，
   // 使其在初始数据中即可用
   plugins?: Plugin[];
+  // AI 生成适配器（宿主注入）：拿到用户指令 + 当前画布的语义图快照（已剥离
+  // 坐标与端口方向）后调自家 LLM，返回语义图对象或其 JSON 字符串。
+  // 模型只描述节点/连线语义，坐标与首尾端口方向由内置自动布局器计算。
+  // 提示词模板与协议见 ai-protocol.ts（defaultAIFlowPrompt）
+  ai?: AIFlowGenerate;
 }
 
 // 流程图场景门面：组装视口 / 文本编辑插件与各内聚模块（模型/编辑/悬浮/交互），
@@ -688,6 +705,108 @@ export class FlowChart {
     }
     this.app.requestRender();
     this.onChange?.("replace");
+  }
+
+  // AI 生成：宿主适配器 → 语义图 → 程序布局 → 整图原子替换。
+  // 模型绝不接触 x/y 与端口方向（这两项是确定性几何问题）；一次生成为
+  // 一条可整体撤销的命令，提问/咨询类指令只返回回答、不改画布。
+  // 提示词用 defaultAIFlowPrompt(req) 渲染即可，宿主可自行定制。
+  async generate(
+    prompt: string,
+    options: AIFlowRunOptions = {},
+  ): Promise<AIFlowRunResult> {
+    const generate = this.options.ai;
+    if (!generate) {
+      throw new Error("未配置 AI 生成适配器（FlowChartOptions.ai）");
+    }
+    if (this.interactions.busy) {
+      throw new Error("画布交互进行中，请稍后重试");
+    }
+    const graph = toSemanticGraph(this.model.toJSON());
+    const req: AIFlowEditRequest = {
+      prompt,
+      graph,
+      history: options.history ?? [],
+    };
+    const parsed = parseAIFlowResponse(await generate(req));
+    // 纯回答：不触发布局，画布保持原样
+    if (!parsed.graph) {
+      return { graph, data: this.model.toJSON(), answer: parsed.answer };
+    }
+    const data = this.renderAIGraph(parsed.graph, options.layout);
+    return { graph: parsed.graph, data, answer: parsed.answer };
+  }
+
+  // 语义图 → 画布数据：按能力键允许第三方布局器覆盖官方 DAG 分层布局，
+  // 落定后自动适应视口。也可直接用于「把一张语义图渲染出来」的非 AI 场景。
+  renderAIGraph(graph: AIFlowGraph, options?: FlowLayoutOptions): FlowData {
+    const custom = this.app.capability(FLOW_AUTO_LAYOUT_CAPABILITY);
+    const data = custom
+      ? custom.layout(graph, options ?? {})
+      : layoutFlowGraph(graph, options);
+    this.setData(data);
+    this.fit();
+    return data;
+  }
+
+  // 整图替换（原子撤销）：先按数据建好新形状/连线实例（端口方向在创建时
+  // 冻结，故必须显式传入），再以一条 flowchart.render 命令整体顶替。
+  // 旧实例留在 undo 闭包内，撤销后此前历史命令引用的对象仍然有效。
+  setData(data: FlowData) {
+    if (this.interactions.busy) return;
+    const before = this.model.toJSON();
+    const beforeEdgeIds = this.model.edges.map((e) => e.id as string);
+    const oldShapes = [...this.model.shapes.values()];
+    const oldEdges = [...this.model.edges];
+    const shapes = data.nodes.map((n) =>
+      this.model.createShape(n.shape, {
+        id: n.id,
+        x: n.x,
+        y: n.y,
+        width: n.width,
+        height: n.height,
+        text: n.text,
+      }),
+    );
+    const byId = new Map(shapes.map((s) => [s.id as string, s]));
+    const edges: FlowEdge[] = [];
+    const afterEdges: FlowEdgeData[] = [];
+    for (const e of data.edges) {
+      const from = byId.get(e.from);
+      const to = byId.get(e.to);
+      if (!from || !to) continue;
+      const edge = new FlowEdge(from, to, { from: e.fromDir, to: e.toDir });
+      edge.router = this.router;
+      if (e.text) edge.label.text = e.text;
+      edges.push(edge);
+      afterEdges.push({
+        from: e.from,
+        to: e.to,
+        fromDir: edge.fromDir,
+        toDir: edge.toDir,
+        ...(e.text ? { text: e.text } : {}),
+      });
+    }
+    const payload: RenderPayload = {
+      before: { data: before, edgeIds: beforeEdgeIds },
+      after: {
+        data: { nodes: shapes.map((s) => shapeData(s)), edges: afterEdges },
+        edgeIds: edges.map((e) => e.id as string),
+      },
+    };
+    // 清掉选中框/端口/编辑覆盖层，避免它们指向被换出的旧实例
+    this.interactions.select(null);
+    this.editing.deactivate();
+    if (this.editing.editing) this.editing.cancelFor(this.editing.editing);
+    this.hover.clearPort();
+    this.history.exec({
+      type: "ai",
+      redo: () => this.model.replaceAll(shapes, edges),
+      undo: () => this.model.replaceAll(oldShapes, oldEdges),
+      toJSON: () => ({ kind: "flowchart.render", payload }),
+    });
+    this.app.requestRender();
+    this.onChange?.("ai");
   }
 
   // 导出当前数据（位置为最新拖拽结果）

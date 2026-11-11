@@ -56,6 +56,58 @@
       z-index: 10;
       user-select: none;
     }
+
+    #ai-panel {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      width: 320px;
+      z-index: 10;
+      padding: 12px;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 6px 24px rgba(15, 23, 42, 0.08);
+      font: 13px/1.5 system-ui, sans-serif;
+      color: #1f2937;
+    }
+
+    #ai-panel h3 {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+
+    #ai-panel button {
+      padding: 5px 12px;
+      font-size: 13px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      background: #fff;
+      color: #1f2937;
+      cursor: pointer;
+    }
+
+    #ai-panel button:hover { background: #f3f4f6; }
+    #ai-panel button:disabled { opacity: 0.5; cursor: default; }
+
+    #ai-panel input,
+    #ai-panel textarea {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 8px;
+      font: inherit;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+    }
+
+    #ai-settings { display: grid; gap: 6px; margin-bottom: 8px; }
+    #ai-settings[hidden] { display: none; }
+    #ai-panel textarea { resize: vertical; }
+    .ai-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+    #ai-status { flex: 1; font-size: 12px; color: #6b7280; word-break: break-all; }
   </style>
 </head>
 
@@ -84,6 +136,20 @@
     <button id="fit-btn">适应视图</button>
     <button id="export-btn">导出 JSON</button>
     <button id="export-img-btn">导出图片</button>
+  </div>
+  <div id="ai-panel">
+    <h3><span>AI 生成流程图</span><button id="ai-settings-toggle" type="button">设置</button></h3>
+    <div id="ai-settings" hidden>
+      <input id="ai-base-url" placeholder="OpenAI 兼容 Base URL" />
+      <input id="ai-api-key" type="password" placeholder="API Key" />
+      <input id="ai-model" placeholder="模型名，如 deepseek-chat" />
+      <button id="ai-save" type="button">保存配置（仅存本地浏览器）</button>
+    </div>
+    <textarea id="ai-prompt" rows="3" placeholder="例如：画一个用户注册审批流程，包含验证码校验和失败重试"></textarea>
+    <div class="ai-actions">
+      <button id="ai-generate" type="button">生成 / 修改</button>
+      <span id="ai-status">AI 只描述节点与连线，坐标和方向由程序布局</span>
+    </div>
   </div>
   <div id="hint">
     点击选中 · 拖拽移动 · 双击编辑文字 · 选中后拖动蓝色圆点连线 · Ctrl+C 复制 · Ctrl+V 粘贴 · Ctrl+Z 撤销 · Ctrl+Y 重做 · Delete 删除 · 滚轮缩放 · 右键拖拽平移
