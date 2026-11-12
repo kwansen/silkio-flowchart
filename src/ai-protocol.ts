@@ -92,9 +92,10 @@ export interface AIFlowCreateNodeOp {
   text?: string;
 }
 
-// 更新一条边的首尾：ref 定位当前连线（两端节点 id + 可选分支标签），
-// from/to 为重接后的端点节点（省略保持），fromDir/toDir 为重接后的端口
-// 方向（省略按最终拓扑自动选边）。复用门面 updateEdge，不重排整张图
+// 更新一条边的首尾/端口/分支标签：ref 定位当前连线（两端节点 id + 可选分支
+// 标签），from/to 为重接后的端点节点（省略保持），fromDir/toDir 为重接后的
+// 端口方向（省略按最终拓扑自动选边），text 为新的分支标签（空字符串清除，
+// 省略保持）。复用门面 updateEdge，不重排整张图
 export interface AIFlowUpdateEdgeOp {
   op: "updateEdge";
   ref: { from: string; to: string; text?: string };
@@ -102,6 +103,44 @@ export interface AIFlowUpdateEdgeOp {
   to?: string;
   fromDir?: PortDir;
   toDir?: PortDir;
+  text?: string;
+}
+
+// 原地替换节点形状：复用门面 replaceShape（与工具条 replaceSelected 同一
+// swapShape 路径）——保留位置、尺寸、文本、id 与全部连线（两端重绑、端口
+// 方向维持冻结值），不重排整张图、不动其他节点。ref 为节点 id（也容忍
+// 唯一文字匹配）；shape 为目标内置形状。与 render 混用被整体拒绝
+export interface AIFlowReplaceShapeOp {
+  op: "replaceShape";
+  ref: string;
+  shape: BuiltinShapeKind;
+}
+
+// 修改节点文字：复用门面 setNodeText（与双击编辑结束同一 textCommand 历史
+// 路径）——只改这一个节点的文字并重排居中，位置/尺寸/连线全部不动。ref 为
+// 节点 id（也容忍唯一文字匹配，可按改前文字定位）；text 为新文字，允许空
+// 字符串（画布允许无文字节点）。与 render 混用被整体拒绝
+export interface AIFlowSetNodeTextOp {
+  op: "setNodeText";
+  ref: string;
+  text: string;
+}
+
+// 删除一个节点：复用门面 removeNode（与手动 Delete 同一删除命令）——节点
+// 连同其关联连线一起删除，undo 按原 z 序索引整体恢复，不重排整张图。
+// ref 为节点 id（也容忍唯一文字匹配）。与 render 混用被整体拒绝
+export interface AIFlowRemoveNodeOp {
+  op: "removeNode";
+  ref: string;
+}
+
+// 删除一条连线：复用门面 removeEdge（与手动 Delete 同一删除命令）——只摘除
+// 这一条连线，两端节点与其它连线不动，undo 按原序插回。ref 为连线 id 或
+// 语义定位 { from, to, text? }（同对节点多条分支边用标签区分）。
+// 与 render 混用被整体拒绝
+export interface AIFlowRemoveEdgeOp {
+  op: "removeEdge";
+  ref: string | { from: string; to: string; text?: string };
 }
 
 // 撤销最近一次变更：直接驱动既有历史链（与手动 Ctrl+Z 完全同源），可连用多次；
@@ -132,6 +171,10 @@ export type AIFlowOp =
   | AIFlowRenderOp
   | AIFlowCreateNodeOp
   | AIFlowUpdateEdgeOp
+  | AIFlowReplaceShapeOp
+  | AIFlowSetNodeTextOp
+  | AIFlowRemoveNodeOp
+  | AIFlowRemoveEdgeOp
   | AIFlowUndoOp
   | AIFlowRedoOp
   | AIFlowHistoryOp
@@ -533,6 +576,53 @@ export function normalizeAIFlowOps(raw: unknown): AIFlowOp[] {
         text,
       };
     }
+    if (op?.op === "replaceShape") {
+      // shape 必须是内置形状（这里就是要精确换成的目标，不能像 nodes[].shape
+      // 那样静默降级为 rect，否则模型笔误会被无声替换成矩形）
+      const ref = typeof op.ref === "string" ? op.ref.trim() : "";
+      if (!ref) throw new Error(`AI replaceShape 操作缺少 ref${no}`);
+      const shape = typeof op.shape === "string" ? op.shape.toLowerCase() : "";
+      if (!BUILTIN_SHAPES.includes(shape as BuiltinShapeKind)) {
+        throw new Error(`AI replaceShape 操作的 shape 非法${no}: ${String(op.shape)}`);
+      }
+      return { op: "replaceShape", ref, shape: shape as BuiltinShapeKind };
+    }
+    if (op?.op === "setNodeText") {
+      // ref 必填；text 必须是字符串（可为空串，画布允许无文字节点）
+      const ref = typeof op.ref === "string" ? op.ref.trim() : "";
+      if (!ref) throw new Error(`AI setNodeText 操作缺少 ref${no}`);
+      if (typeof op.text !== "string") {
+        throw new Error(`AI setNodeText 操作的 text 不是字符串${no}`);
+      }
+      return { op: "setNodeText", ref, text: op.text };
+    }
+    if (op?.op === "removeNode") {
+      const ref = typeof op.ref === "string" ? op.ref.trim() : "";
+      if (!ref) throw new Error(`AI removeNode 操作缺少 ref${no}`);
+      return { op: "removeNode", ref };
+    }
+    if (op?.op === "removeEdge") {
+      // ref 为连线 id，或 { from, to, text? } 语义定位（复用 updateEdge 的
+      // ref 校验语义：from/to 必填非空字符串，text 可选）
+      const r = op.ref;
+      const str = (v: unknown): string | undefined =>
+        typeof v === "string" && v.trim() ? v.trim() : undefined;
+      if (typeof r === "string") {
+        if (!r.trim()) throw new Error(`AI removeEdge 操作缺少 ref${no}`);
+        return { op: "removeEdge", ref: r.trim() };
+      }
+      const rec = r as Record<string, unknown> | null;
+      const from = str(rec?.from);
+      const to = str(rec?.to);
+      if (!from || !to) {
+        throw new Error(`AI removeEdge 操作缺少 ref.from / ref.to${no}`);
+      }
+      const text = str(rec?.text);
+      return {
+        op: "removeEdge",
+        ref: { from, to, ...(text ? { text } : {}) },
+      };
+    }
     if (op?.op === "updateEdge") {
       const r = op.ref as Record<string, unknown> | null;
       const str = (v: unknown): string | undefined =>
@@ -555,6 +645,15 @@ export function normalizeAIFlowOps(raw: unknown): AIFlowOp[] {
       const nextTo = str(op.to);
       const nextFromDir = dirOf(op.fromDir, "fromDir");
       const nextToDir = dirOf(op.toDir, "toDir");
+      // 分支标签：省略保持不变；空字符串表示清除（须与「不改」显式区分），
+      // 非字符串视为脏字段
+      let nextText: string | undefined;
+      if (op.text !== undefined) {
+        if (typeof op.text !== "string") {
+          throw new Error(`AI updateEdge 操作的 text 不是字符串${no}`);
+        }
+        nextText = op.text.trim();
+      }
       return {
         op: "updateEdge",
         ref: { from: refFrom, to: refTo, ...(refText ? { text: refText } : {}) },
@@ -562,6 +661,7 @@ export function normalizeAIFlowOps(raw: unknown): AIFlowOp[] {
         ...(nextTo ? { to: nextTo } : {}),
         ...(nextFromDir ? { fromDir: nextFromDir } : {}),
         ...(nextToDir ? { toDir: nextToDir } : {}),
+        ...(nextText !== undefined ? { text: nextText } : {}),
       };
     }
     throw new Error(`AI 返回了未知操作类型${no}: ${String(op?.op)}`);
@@ -664,15 +764,30 @@ export function defaultAIFlowPrompt(req: AIFlowEditRequest): string {
     '3. 查看历史：{"ops":[{"op":"history"}]}（只读，程序会把可撤销/可重做的变更列表并入回答）。',
     '4. 回答提问：{"ops":[{"op":"answer","text":"回答文本"}]} 或 {"answer":"回答文本"} 或纯文本。',
     '5. 在指定节点旁新建：{"ops":[{"op":"createNode","ref":"n2","dir":"bottom","shape":"rect","text":"新步骤"}]}；可连写多条。',
-    '6. 修改某条连线的首尾：{"ops":[{"op":"updateEdge","ref":{"from":"a","to":"b"},"fromDir":"right","toDir":"left"}]}；可连写多条。',
+    '6. 修改某条连线（首尾/出入端口/分支标签）：{"ops":[{"op":"updateEdge","ref":{"from":"a","to":"b"},"fromDir":"right","toDir":"left","text":"是"}]}；可连写多条。',
+    '7. 替换某节点的形状：{"ops":[{"op":"replaceShape","ref":"n2","shape":"diamond"}]}；可连写多条。',
+    '8. 修改某节点的文字：{"ops":[{"op":"setNodeText","ref":"n2","text":"新文字"}]}；可连写多条。',
+    '9. 删除某节点：{"ops":[{"op":"removeNode","ref":"n2"}]}（节点连同其关联连线一起删除）；可连写多条。',
+    '10. 删除某条连线：{"ops":[{"op":"removeEdge","ref":{"from":"a","to":"b"}}]} 或 {"ops":[{"op":"removeEdge","ref":"边id"}]}；可连写多条。',
     "字段说明（updateEdge）：",
     "- ref：定位当前连线，from/to 为这条边现在的起点与终点节点 id；同对节点有多条分支边时加 text 填分支标签。",
     "- fromDir / toDir：重接后的出入端口，只能是 top / bottom / left / right（如「从 a 的右边出、进 b 的左边」填 right / left）；省略时程序按节点相对位置自动选边。",
-    "- from / to：把该端重接到别的节点（填节点 id 或唯一文字）；省略表示端点节点不变，只改方向。",
+    "- from / to：把该端重接到别的节点（填节点 id 或唯一文字）；省略表示端点节点不变，只改方向或标签。",
+    "- text：新的分支标签（是/否、通过/驳回等），空字符串表示清除标签；省略表示标签不变。只改标签时 from/to/fromDir/toDir 全部省略即可。",
     "字段说明（createNode）：",
     "- ref：参考节点的 id，取下方「当前流程图」里的 nodes[].id；也可用该节点唯一文字。",
     "- dir：新节点相对参考节点的方向，只能是 top / bottom / left / right（上 / 下 / 左 / 右）。",
     "- shape：新节点形状，取值同 nodes[].shape；省略时与参考节点同类型。text 为节点文字，可为空字符串。",
+    "字段说明（replaceShape）：",
+    "- ref：目标节点的 id 或唯一文字。",
+    "- shape：目标形状，只允许 rect / diamond / ellipse / parallelogram / hexagon / database。节点位置、尺寸、文字与全部连线保持不变，只换形状。",
+    "字段说明（setNodeText）：",
+    "- ref：目标节点的 id 或唯一文字（可按改前文字定位）。",
+    "- text：新文字，可为空字符串（画布允许无文字节点）。节点位置、尺寸、形状与全部连线保持不变，只改文字。",
+    "字段说明（removeNode / removeEdge）：",
+    "- removeNode.ref：待删节点的 id 或唯一文字；其关联连线随之删除，一次 Ctrl+Z 可整体恢复。",
+    "- removeEdge.ref：连线 id，或 { from, to } 加可选 text（同对节点有多条分支边时用标签区分）。",
+    "- 删除判断节点前先确认其分支已另行处理；删除后不要让其它节点变成没有连线的孤岛。",
     "字段说明（render）：",
     "- nodes[].id：节点唯一标识，字符串；新节点可以给新 id 或省略（程序自动补全）。",
     "- nodes[].shape：只允许 rect（步骤）、diamond（判断）、ellipse（开始/结束）、parallelogram（输入/输出）、hexagon（准备）、database（存储）。也可以用 role 字段代替（start/end/decision/io/process/data），程序会自动推断形状。",
@@ -685,7 +800,10 @@ export function defaultAIFlowPrompt(req: AIFlowEditRequest): string {
     "- 循环/回退用一条指回已有节点的边表示，不要复制出重复节点；不要出现没有连线的孤立节点。",
     "- 修改现有流程图时，保留未改动节点的 id 与文字，只增删需要变化的节点和边，输出完整的最终图（不是补丁）。",
     "- 用户说「在 X 下面 / 上面 / 左边 / 右边新建节点」「给某个节点加一个分支节点」时，用 createNode 操作（方向按用户说的映射到 dir），不要重新输出整张图；这类操作不会改动其他节点的位置与整图结构。createNode 不能与 render 写在同一批。",
-    "- 用户说「把 a→b 改成从右边出、左边进」「某条边改连到 c」「调整连线的出入方向」时，用 updateEdge 操作，不要重新输出整张图；它只改这一条边的首尾，不动任何节点位置。updateEdge 不能与 render 写在同一批。",
+    "- 用户说「把 a→b 改成从右边出、左边进」「某条边改连到 c」「调整连线的出入方向」「把 a→b 的分支标签改成 X / 去掉某条边的标签」时，用 updateEdge 操作，不要重新输出整张图；它只改这一条边的首尾、端口与标签，不动任何节点位置。updateEdge 不能与 render 写在同一批。",
+    "- 用户说「把某节点改成菱形/数据库/椭圆」等只换形状的要求时，用 replaceShape 操作，不要重新输出整张图；它保留节点位置、文字与全部连线。replaceShape 不能与 render 写在同一批。",
+    "- 用户说「把某节点的文字改成 X」「重命名某节点」等只改文字的要求时，用 setNodeText 操作，不要重新输出整张图；它保留节点位置、形状与全部连线。setNodeText 不能与 render 写在同一批。",
+    "- 用户说「删除某节点」「去掉某条连线」「移除某个步骤」时，用 removeNode / removeEdge 操作，不要重新输出整张图；删除动作可撤销，且不会打乱其它节点的位置。removeNode / removeEdge 不能与 render 写在同一批。",
     "对话规则：",
     "- 用户问「选中了什么」「这个节点是什么」时，只依据下方「当前选中」回答，不要改图；当前选中为空就直说没有选中任何节点或连线，不要编造。",
     "- 用户说「撤销」「重做」时输出对应的 undo / redo 操作，不要试图通过重新生成整张图来模拟；下方「历史状态」为 0 条时应如实说明没有可撤销/可重做的变更。",

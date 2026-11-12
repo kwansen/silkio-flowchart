@@ -98,6 +98,70 @@ describe("AI 操作协议", () => {
     ).toThrow(/fromDir 非法/);
   });
 
+  it("updateEdge 支持改分支标签：text 空串表示清除，非字符串拒绝", () => {
+    const { ops } = parseAIFlowOps(
+      '{"ops":[{"op":"updateEdge","ref":{"from":"a","to":"b","text":"是"},"text":"通过"},{"op":"updateEdge","ref":{"from":"a","to":"b"},"text":""}]}',
+    );
+    expect(ops).toEqual([
+      { op: "updateEdge", ref: { from: "a", to: "b", text: "是" }, text: "通过" },
+      { op: "updateEdge", ref: { from: "a", to: "b" }, text: "" },
+    ]);
+    expect(() =>
+      normalizeAIFlowOps([
+        { op: "updateEdge", ref: { from: "a", to: "b" }, text: 42 },
+      ]),
+    ).toThrow(/text 不是字符串/);
+  });
+
+  it("replaceShape：解析 ref 与形状（大小写归一）；缺 ref / shape 非法整体拒绝", () => {
+    const { ops } = parseAIFlowOps(
+      '{"ops":[{"op":"replaceShape","ref":"校验通过？","shape":"DATABASE"},{"op":"replaceShape","ref":"a","shape":"rect"}]}',
+    );
+    expect(ops).toEqual([
+      { op: "replaceShape", ref: "校验通过？", shape: "database" },
+      { op: "replaceShape", ref: "a", shape: "rect" },
+    ]);
+    expect(() => normalizeAIFlowOps([{ op: "replaceShape", shape: "rect" }])).toThrow(
+      /缺少 ref/,
+    );
+    // 目标形状必须精确命中内置形状：静默降级成 rect 会把笔误无声替换
+    expect(() =>
+      normalizeAIFlowOps([{ op: "replaceShape", ref: "a", shape: "circle" }]),
+    ).toThrow(/shape 非法/);
+  });
+
+  it("setNodeText：解析 ref 与新文字（允许空串）；缺 ref / text 非字符串整体拒绝", () => {
+    const { ops } = parseAIFlowOps(
+      '{"ops":[{"op":"setNodeText","ref":"校验通过？","text":"是否管理员"},{"op":"setNodeText","ref":"n1","text":""}]}',
+    );
+    expect(ops).toEqual([
+      { op: "setNodeText", ref: "校验通过？", text: "是否管理员" },
+      { op: "setNodeText", ref: "n1", text: "" },
+    ]);
+    expect(() => normalizeAIFlowOps([{ op: "setNodeText", text: "x" }])).toThrow(/缺少 ref/);
+    expect(() =>
+      normalizeAIFlowOps([{ op: "setNodeText", ref: "a", text: 42 }]),
+    ).toThrow(/text 不是字符串/);
+  });
+
+  it("removeNode / removeEdge：解析 ref；缺 ref / 缺 ref.from·to 整体拒绝", () => {
+    const { ops } = parseAIFlowOps(
+      '{"ops":[{"op":"removeNode","ref":"校验通过？"},{"op":"removeEdge","ref":"e9"},{"op":"removeEdge","ref":{"from":"a","to":"b","text":"是"}}]}',
+    );
+    expect(ops).toEqual([
+      { op: "removeNode", ref: "校验通过？" },
+      { op: "removeEdge", ref: "e9" },
+      { op: "removeEdge", ref: { from: "a", to: "b", text: "是" } },
+    ]);
+    expect(() => normalizeAIFlowOps([{ op: "removeNode" }])).toThrow(/removeNode 操作缺少 ref/);
+    expect(() =>
+      normalizeAIFlowOps([{ op: "removeEdge", ref: "  " }]),
+    ).toThrow(/removeEdge 操作缺少 ref/);
+    expect(() =>
+      normalizeAIFlowOps([{ op: "removeEdge", ref: { from: "a" } }]),
+    ).toThrow(/ref\.from \/ ref\.to/);
+  });
+
   it("createNode 非法字段整体拒绝：缺 ref / dir 非法 / text 非字符串", () => {
     expect(() => normalizeAIFlowOps([{ op: "createNode", dir: "bottom" }])).toThrow(/缺少 ref/);
     expect(() =>

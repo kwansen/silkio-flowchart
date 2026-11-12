@@ -46,7 +46,7 @@ import { BuiltinEdgeRouter, EDGE_ROUTER_CAPABILITY } from "./edge-router";
 import type { EdgeRouterCapability } from "./edge-router";
 import { SelectionOverlay } from "./overlay";
 import { dominantPortDir, marqueeHits, portPos, unionBounds } from "./geometry";
-import { bindFlowchartCommands, reconnectCommand, shapeData } from "./commands";
+import { bindFlowchartCommands, edgeTextCommand, reconnectCommand, shapeData, textCommand } from "./commands";
 import { createFlowchartCodec } from "./history-codec";
 import type { DeletePayload } from "./history-codec";
 import { FlowModel } from "./model";
@@ -367,7 +367,7 @@ export class FlowChart {
     });
     // 注册动作本身作为可逆命令：redo 完成注册，undo 摘除节点及其关联连线。
     // 序列化载荷：内嵌形状数据快照，导入端经形状注册表重建
-    this.history.exec({
+    this.execCmd({
       type: "add",
       redo: () => this.model.registerShape(shape),
       undo: () => this.model.removeShape(shape),
@@ -406,7 +406,7 @@ export class FlowChart {
     const source = this.resolveShape(ref);
     if (!source) return null;
     const shape = createNodeInDirection(
-      { model: this.model, router: this.router, history: this.history },
+      { model: this.model, router: this.router, history: this.aiHistory() },
       source,
       dir,
       kind ?? source.kind,
@@ -417,11 +417,13 @@ export class FlowChart {
     return shape.id as string;
   }
 
-  // 更新一条边的首尾：可改两端节点（from/to）与两端端口方向（fromDir/toDir），
-  // 省略的字段保持原值；未显式给方向时按最终拓扑的主导方向自动选边。
+  // 更新一条边的首尾与分支标签：可改两端节点（from/to）、两端端口方向
+  // （fromDir/toDir）与分支标签（text，空字符串清除标签），省略的字段保持
+  // 原值；未显式给方向时按最终拓扑的主导方向自动选边。
   // ref 为边 id，或语义定位 { from, to, text? }（同对节点多条分支边用标签区分）。
-  // 与拖拽端点重接同源（reattachEnd + reconnectCommand），两端合成一条原子命令，
-  // 一次 Ctrl+Z 整体回退；不动任何节点几何、视口与选中态。返回是否生效。
+  // 与拖拽端点重接/标签编辑同源（reattachEnd + reconnectCommand / edgeTextCommand），
+  // 全部子命令合成为一条原子命令，一次 Ctrl+Z 整体回退；不动任何节点几何、
+  // 视口与选中态。返回是否生效。
   updateEdge(
     ref: string | { from: string; to: string; text?: string },
     patch: {
@@ -429,6 +431,7 @@ export class FlowChart {
       fromDir?: PortDir;
       to?: string;
       toDir?: PortDir;
+      text?: string;
     },
   ): boolean {
     if (this.interactions.busy || this.editing.editing) return false;
@@ -446,11 +449,15 @@ export class FlowChart {
     const oldFromDir = edge.fromDir;
     const oldToNode = edge.toNode;
     const oldToDir = edge.toDir;
+    const oldText = edge.label.text;
     const newFromNode = patch.from ? this.resolveShape(patch.from) : oldFromNode;
     const newToNode = patch.to ? this.resolveShape(patch.to) : oldToNode;
     if (!newFromNode || !newToNode) return false;
     const touchFrom = patch.from !== undefined || patch.fromDir !== undefined;
     const touchTo = patch.to !== undefined || patch.toDir !== undefined;
+    // 标签：text 给出即改（空字符串清除），与旧值相同视为无变化
+    const newText = patch.text;
+    const touchText = newText !== undefined && newText !== oldText;
     // 按最终两端拓扑算主导方向，避免「先改 from 再改 to」时自动选边参考到旧端点
     const autoDir = dominantPortDir(newFromNode, newToNode);
     const finalFromDir = touchFrom ? (patch.fromDir ?? autoDir) : oldFromDir;
@@ -461,13 +468,18 @@ export class FlowChart {
       newFromNode === oldFromNode &&
       newToNode === oldToNode &&
       finalFromDir === oldFromDir &&
-      finalToDir === oldToDir
+      finalToDir === oldToDir &&
+      !touchText
     ) {
       return true;
     }
-    // 变更已发生 → record 只入栈；两端子命令合成为一条，undo 逆序回退
+    // 变更已发生 → record 只入栈；各子命令合成为一条，undo 逆序回退
     edge.reattachEnd("from", newFromNode, finalFromDir);
     edge.reattachEnd("to", newToNode, finalToDir);
+    if (touchText) {
+      edge.label.text = newText;
+      edge.layout();
+    }
     const cmds: HistoryCommand[] = [];
     if (
       newFromNode !== oldFromNode ||
@@ -489,8 +501,16 @@ export class FlowChart {
         reconnectCommand(edge, "to", oldToNode, oldToDir, newToNode, finalToDir),
       );
     }
-    this.history.record(
-      cmds.length === 1 ? cmds[0]! : compose("reconnect", ...cmds),
+    if (touchText) {
+      cmds.push(edgeTextCommand(edge, oldText, newText));
+    }
+    this.recordCmd(
+      cmds.length === 1
+        ? cmds[0]!
+        : compose(
+            cmds.every((c) => c.type === "reconnect") ? "reconnect" : "text",
+            ...cmds,
+          ),
     );
     this.app.requestRender();
     this.onChange?.("reconnect");
@@ -603,7 +623,7 @@ export class FlowChart {
       if (text) edge.label.text = text;
       return edge;
     });
-    this.history.exec(
+    this.execCmd(
       compose(
         "add",
         ...shapes.map(
@@ -663,7 +683,7 @@ export class FlowChart {
       this.sel.clear();
       list.forEach((s) => this.model.removeShape(s));
       this.app.requestRender();
-      this.history.exec({
+      this.execCmd({
         type: "delete",
         redo: () => {
           for (const c of captured) this.model.applyShapeRemoval(c);
@@ -701,84 +721,129 @@ export class FlowChart {
     const sel = this.sel.items[0];
     if (!sel) return;
     if (sel instanceof FlowEdge) {
-      const captured = {
-        edge: sel,
-        childIdx: this.app.children.indexOf(sel),
-        listIdx: this.model.edges.indexOf(sel),
-      };
-      this.interactions.select(null);
-      this.model.removeTop(sel);
-      this.model.edges = this.model.edges.filter((e) => e !== sel);
-      this.app.requestRender();
-      this.history.exec({
-        type: "delete",
-        redo: () => {
-          this.model.removeTop(captured.edge);
-          this.model.edges = this.model.edges.filter(
-            (e) => e !== captured.edge,
-          );
-        },
-        undo: () => {
-          this.model.edges.splice(
-            Math.min(captured.listIdx, this.model.edges.length),
-            0,
-            captured.edge,
-          );
-          this.model.insertAt(captured.edge, captured.childIdx);
-        },
-        // 序列化载荷：单边删除——内嵌连线两端 id 与端口方向（脱离连线表后
-        // 无从按 id 解析，须可完整重建）+ 两个插入索引
-        toJSON: () => ({
-          kind: "flowchart.delete",
-          payload: {
-            v: "edge",
-            edge: {
-              edgeId: captured.edge.id!,
-              fromId: captured.edge.fromNode.id as string,
-              toId: captured.edge.toNode.id as string,
-              fromDir: captured.edge.fromDir,
-              toDir: captured.edge.toDir,
-              text: captured.edge.label.text || undefined,
-            },
-            childIdx: captured.childIdx,
-            listIdx: captured.listIdx,
-          } satisfies DeletePayload,
-        }),
-      });
+      this.execRemoveEdge(sel);
     } else {
-      const captured = this.model.captureShapeRemoval(sel);
-      this.model.removeShape(sel);
-      this.app.requestRender();
-      this.history.exec({
-        type: "delete",
-        redo: () => this.model.applyShapeRemoval(captured),
-        undo: () => this.model.restoreShapeRemoval(captured),
-        // 序列化载荷：与多形状删除同构（单条目）
-        toJSON: () => ({
-          kind: "flowchart.delete",
-          payload: {
-            v: "shapes",
-            items: [
-              {
-                data: shapeData(captured.shape),
-                childIdx: captured.childIdx,
-                edges: captured.edges.map(({ edge, order, childIdx }) => ({
-                  id: edge.id!,
-                  fromId: edge.fromNode.id as string,
-                  toId: edge.toNode.id as string,
-                  fromDir: edge.fromDir,
-                  toDir: edge.toDir,
-                  text: edge.label.text || undefined,
-                  order,
-                  childIdx,
-                })),
-              },
-            ],
-          } satisfies DeletePayload,
-        }),
-      });
+      this.execRemoveShape(sel);
     }
     this.onChange?.("delete");
+  }
+
+  // 摘除一个节点并记为可逆删除命令（deleteSelected 单选分支与 AI removeNode
+  // 共用）：节点连同关联连线一起删除，undo 按原 z 序索引插回
+  private execRemoveShape(shape: Shape) {
+    const captured = this.model.captureShapeRemoval(shape);
+    this.model.removeShape(shape);
+    this.app.requestRender();
+    this.execCmd({
+      type: "delete",
+      redo: () => this.model.applyShapeRemoval(captured),
+      undo: () => this.model.restoreShapeRemoval(captured),
+      // 序列化载荷：被删形状内嵌数据快照（脱离树后无从按 id 解析），关联连线
+      // 内嵌连线数据；order=连线表序、childIdx=z 序，两个索引都要定格
+      toJSON: () => ({
+        kind: "flowchart.delete",
+        payload: {
+          v: "shapes",
+          items: [
+            {
+              data: shapeData(captured.shape),
+              childIdx: captured.childIdx,
+              edges: captured.edges.map(({ edge, order, childIdx }) => ({
+                id: edge.id!,
+                fromId: edge.fromNode.id as string,
+                toId: edge.toNode.id as string,
+                fromDir: edge.fromDir,
+                toDir: edge.toDir,
+                text: edge.label.text || undefined,
+                order,
+                childIdx,
+              })),
+            },
+          ],
+        } satisfies DeletePayload,
+      }),
+    });
+  }
+
+  // 摘除一条连线并记为可逆删除命令（deleteSelected 单选分支与 AI removeEdge
+  // 共用）：undo 按原连线表序与 z 序插回；仅在连线处于选中态时清空选中
+  private execRemoveEdge(edge: FlowEdge) {
+    const captured = {
+      edge,
+      childIdx: this.app.children.indexOf(edge),
+      listIdx: this.model.edges.indexOf(edge),
+    };
+    if (this.sel.items.includes(edge)) this.interactions.select(null);
+    this.model.removeTop(edge);
+    this.model.edges = this.model.edges.filter((e) => e !== edge);
+    this.app.requestRender();
+    this.execCmd({
+      type: "delete",
+      redo: () => {
+        this.model.removeTop(captured.edge);
+        this.model.edges = this.model.edges.filter(
+          (e) => e !== captured.edge,
+        );
+      },
+      undo: () => {
+        this.model.edges.splice(
+          Math.min(captured.listIdx, this.model.edges.length),
+          0,
+          captured.edge,
+        );
+        this.model.insertAt(captured.edge, captured.childIdx);
+      },
+      // 序列化载荷：单边删除——内嵌连线两端 id 与端口方向（脱离连线表后
+      // 无从按 id 解析，须可完整重建）+ 两个插入索引
+      toJSON: () => ({
+        kind: "flowchart.delete",
+        payload: {
+          v: "edge",
+          edge: {
+            edgeId: captured.edge.id!,
+            fromId: captured.edge.fromNode.id as string,
+            toId: captured.edge.toNode.id as string,
+            fromDir: captured.edge.fromDir,
+            toDir: captured.edge.toDir,
+            text: captured.edge.label.text || undefined,
+          },
+          childIdx: captured.childIdx,
+          listIdx: captured.listIdx,
+        } satisfies DeletePayload,
+      }),
+    });
+  }
+
+  // 删除一个节点（程序化入口，AI removeNode 操作复用）：节点连同其关联连线
+  // 一起删除，undo 按原 z 序索引整体恢复。ref 为节点 id 或唯一文字。
+  // 返回是否生效。
+  removeNode(ref: string): boolean {
+    if (this.interactions.busy || this.editing.editing) return false;
+    const shape = this.resolveShape(ref);
+    if (!shape) return false;
+    this.execRemoveShape(shape);
+    this.onChange?.("delete");
+    return true;
+  }
+
+  // 删除一条连线（程序化入口，AI removeEdge 操作复用）：只摘除这一条连线，
+  // 两端节点与其它连线不动，undo 按原序插回。ref 为连线 id，或语义定位
+  // { from, to, text? }（同对节点多条分支边用标签区分）。返回是否生效。
+  removeEdge(ref: string | { from: string; to: string; text?: string }): boolean {
+    if (this.interactions.busy || this.editing.editing) return false;
+    const edge =
+      typeof ref === "string"
+        ? this.model.edges.find((e) => e.id === ref)
+        : this.model.edges.find(
+            (e) =>
+              e.fromNode.id === ref.from &&
+              e.toNode.id === ref.to &&
+              (ref.text === undefined || e.label.text === ref.text),
+          );
+    if (!edge) return false;
+    this.execRemoveEdge(edge);
+    this.onChange?.("delete");
+    return true;
   }
 
   // 替换当前选中形状的类型：保留位置、尺寸、文本、id 与全部连线
@@ -804,7 +869,7 @@ export class FlowChart {
     // 导入端经会话注册表按 id 保证 undo/redo 顶替的是同一实例
     if (pairs.length === 1) {
       const p = pairs[0];
-      this.history.exec({
+      this.execCmd({
         type: "replace",
         redo: () => this.model.swapShape(p.old, p.shape),
         undo: () => this.model.swapShape(p.shape, p.old),
@@ -817,7 +882,7 @@ export class FlowChart {
       // 多选批量替换：序列化为组合命令（子命令与单选 replace 载荷同构，
       // 编解码器复用现有分支）；swapShape 内逐个 onSelect 会把选中塌缩成
       // 单选，redo 收尾恢复整组选中（undo/redo 按钮路径会另行清空选中）
-      this.history.exec({
+      this.execCmd({
         type: "replace",
         redo: () => {
           for (const p of pairs) this.model.swapShape(p.old, p.shape);
@@ -845,6 +910,50 @@ export class FlowChart {
     }
     this.app.requestRender();
     this.onChange?.("replace");
+  }
+
+  // 原地替换一个节点的形状（程序化入口，AI replaceShape 操作复用）：与
+  // replaceSelected 单选路径同一 swapShape 语义——保留位置、尺寸、文本、id
+  // 与全部连线（两端重绑、端口方向维持冻结值），一条可逆命令。ref 为节点 id
+  // 或唯一文字；目标类型与当前相同视为无变化（不记命令）。返回是否生效。
+  replaceShape(ref: string, kind: ShapeKind): boolean {
+    if (this.interactions.busy || this.editing.editing) return false;
+    const old = this.resolveShape(ref);
+    if (!old || old.kind === kind) return false;
+    const shape = this.model.createShape(kind, {
+      id: old.id as string,
+      x: old.x,
+      y: old.y,
+      width: old.width,
+      height: old.height,
+      text: old.text.text,
+    });
+    this.execCmd({
+      type: "replace",
+      redo: () => this.model.swapShape(old, shape),
+      undo: () => this.model.swapShape(shape, old),
+      toJSON: () => ({
+        kind: "flowchart.replace",
+        payload: { oldData: shapeData(old), newData: shapeData(shape) },
+      }),
+    });
+    this.app.requestRender();
+    this.onChange?.("replace");
+    return true;
+  }
+
+  // 修改一个节点的文字（程序化入口，AI setNodeText 操作复用）：与双击编辑
+  // 结束同一 textCommand 历史路径——只改文字并重排居中，位置/尺寸/连线全部
+  // 不动，一条可逆命令。ref 为节点 id 或唯一文字（可按改前文字定位）；文字
+  // 未变化视为无变化（不记命令）。返回是否生效。
+  setNodeText(ref: string, text: string): boolean {
+    if (this.interactions.busy || this.editing.editing) return false;
+    const shape = this.resolveShape(ref);
+    if (!shape || shape.text.text === text) return false;
+    this.execCmd(textCommand(shape, shape.text.text, text));
+    this.app.requestRender();
+    this.onChange?.("text");
+    return true;
   }
 
   // 当前选中快照（语义形态，只读）：选中形状按模型形状表取，连线以两端节点
@@ -909,6 +1018,48 @@ export class FlowChart {
     };
   }
 
+  // AI 批量执行收集器：一次 AI run 的全部增量 op（新建/换边/换形状/改文字/删除）
+  // 合并为一条 "ai" 组合命令入栈——无论执行多少步（如批量删除几十个节点），
+  // 撤销历史只多一条记录（与 mindmap ai-controller 的 compose("ai", ...) 同一语义）。
+  // 批量期间 exec 先 redo 立即生效（与 History.exec 一致）但暂缓入栈，run 结束
+  // 统一 compose 入栈；record（变更已发生）仅收集。run 结束时最后一次
+  // record 仍会清空重做分支，"新变更使既有重做分支失效"的语义保持不变
+  private aiBatch: HistoryCommand[] | null = null;
+
+  // 批量收集期间的 exec：立即生效但暂缓入栈
+  private execCmd(cmd: HistoryCommand): void {
+    if (this.aiBatch) {
+      cmd.redo();
+      this.aiBatch.push(cmd);
+    } else {
+      this.history.exec(cmd);
+    }
+  }
+
+  // 批量收集期间的 record（变更已发生的场景）：仅收集
+  private recordCmd(cmd: HistoryCommand): void {
+    if (this.aiBatch) this.aiBatch.push(cmd);
+    else this.history.record(cmd);
+  }
+
+  // 批量期间注入复用路径（createNodeInDirection 等）的 history 替身：
+  // exec/record 转入收集器，其余透传；未批量时与 this.history 等价
+  private aiHistory(): HistoryCapability {
+    const self = this;
+    return {
+      exec: (cmd) => self.execCmd(cmd),
+      record: (cmd) => self.recordCmd(cmd),
+      undo: () => self.history.undo(),
+      redo: () => self.history.redo(),
+      get canUndo() {
+        return self.history.canUndo;
+      },
+      get canRedo() {
+        return self.history.canRedo;
+      },
+    };
+  }
+
   // AI 生成：宿主适配器 → 操作序列 → 逐条执行。改图有两条路径：
   // render（语义图 → 程序布局 → 整图原子替换）与 createNode（参考节点 + 方向 +
   // 类型 → 复用端口手柄快速创建，纯增量、不动其他节点）。模型绝不接触 x/y 与
@@ -944,15 +1095,23 @@ export class FlowChart {
     const hasControl = ops.some((o) => o.op === "undo" || o.op === "redo");
     const hasRender = ops.some((o) => o.op === "render");
     const hasIncremental = ops.some(
-      (o) => o.op === "createNode" || o.op === "updateEdge",
+      (o) =>
+        o.op === "createNode" ||
+        o.op === "updateEdge" ||
+        o.op === "replaceShape" ||
+        o.op === "setNodeText" ||
+        o.op === "removeNode" ||
+        o.op === "removeEdge",
     );
-    if (hasControl && hasRender) {
+    if (hasControl && (hasRender || hasIncremental)) {
       throw new Error("AI 的 undo/redo 操作不能与改图操作混用，请分开执行");
     }
-    // createNode / updateEdge 都以「当前画布」为基准，与整图重绘混用会让结果
-    // 取决于执行顺序（重绘会覆盖此前的增量变更），整体拒绝
+    // 增量操作都以「当前画布」为基准，与整图重绘混用会让结果取决于执行顺序
+    // （重绘会覆盖此前的增量变更），整体拒绝
     if (hasIncremental && hasRender) {
-      throw new Error("AI 的增量操作（新建/换边）不能与整图重绘混用，请分开执行");
+      throw new Error(
+        "AI 的增量操作（新建/换边/换形状/改文字/删除）不能与整图重绘混用，请分开执行",
+      );
     }
 
     // 生成期间用户可能开始拖拽/编辑，执行前复查（与入口守卫对称）
@@ -965,72 +1124,137 @@ export class FlowChart {
     let applied = 0;
     // 本次生效的语义图：无 render 时为执行前的快照（undo/redo 后重新导出当前图）
     let resultGraph = graph;
-    // 顺序执行：history 反映此前操作的效果；反应答只增删文本，不动画布
-    for (const op of ops) {
-      if (op.op === "undo") {
-        const ok = this.undo();
-        if (ok) applied++;
-        steps.push({
-          op,
-          label: ok ? "撤销最近一次变更" : "没有可撤销的变更，已跳过",
-          status: ok ? "applied" : "skipped",
-        });
-      } else if (op.op === "redo") {
-        const ok = this.redo();
-        if (ok) applied++;
-        steps.push({
-          op,
-          label: ok ? "重做最近一次被撤销的变更" : "没有可重做的变更，已跳过",
-          status: ok ? "applied" : "skipped",
-        });
-      } else if (op.op === "history") {
-        answers.push(this.historyReport());
-        steps.push({ op, label: "读取历史记录", status: "applied" });
-      } else if (op.op === "render") {
-        resultGraph = op.graph;
-        this.renderAIGraph(op.graph, options.layout);
-        applied++;
-        steps.push({
-          op,
-          label: `按语义图重绘（${op.graph.nodes.length} 个节点、${op.graph.edges.length} 条连线）`,
-          status: "applied",
-        });
-      } else if (op.op === "createNode") {
-        // 直接调用门面「参考节点 + 方向 + 类型」快速创建：与点击端口手柄同一路径，
-        // 已有节点几何、缩放/平移、激活态全部不受影响
-        const id = this.createNodeFrom(op.ref, op.dir, op.shape, op.text);
-        if (id) applied++;
-        const dirLabel: Record<PortDir, string> = {
-          top: "上方",
-          bottom: "下方",
-          left: "左侧",
-          right: "右侧",
-        };
-        steps.push({
-          op,
-          label: id
-            ? `在「${op.ref}」${dirLabel[op.dir]}新建节点「${op.text}」`
-            : `参考节点「${op.ref}」不存在或画布正忙，已跳过`,
-          status: id ? "applied" : "skipped",
-        });
-      } else if (op.op === "updateEdge") {
-        // 直接调用门面「更新一条边的首尾」：只重接这一条边，节点几何、
-        // 缩放/平移、选中态全部不受影响
-        const ok = this.updateEdge(op.ref, {
-          from: op.from,
-          fromDir: op.fromDir,
-          to: op.to,
-          toDir: op.toDir,
-        });
-        if (ok) applied++;
-        steps.push({
-          op,
-          label: ok
-            ? `更新「${op.ref.from} → ${op.ref.to}」这条连线的首尾`
-            : `未找到「${op.ref.from} → ${op.ref.to}」这条连线或画布正忙，已跳过`,
-          status: ok ? "applied" : "skipped",
-        });
+    // 顺序执行：history 反映此前操作的效果；反应答只增删文本，不动画布。
+    // 全部增量 op 收进 aiBatch，run 结束合并为一条 "ai" 组合命令入栈——一次
+    // AI 操作对撤销历史只是一条记录；异常中断时 finally 兜底入栈，已生效的
+    // 变更仍然可撤销
+    this.aiBatch = [];
+    try {
+      for (const op of ops) {
+        if (op.op === "undo") {
+          const ok = this.undo();
+          if (ok) applied++;
+          steps.push({
+            op,
+            label: ok ? "撤销最近一次变更" : "没有可撤销的变更，已跳过",
+            status: ok ? "applied" : "skipped",
+          });
+        } else if (op.op === "redo") {
+          const ok = this.redo();
+          if (ok) applied++;
+          steps.push({
+            op,
+            label: ok ? "重做最近一次被撤销的变更" : "没有可重做的变更，已跳过",
+            status: ok ? "applied" : "skipped",
+          });
+        } else if (op.op === "history") {
+          answers.push(this.historyReport());
+          steps.push({ op, label: "读取历史记录", status: "applied" });
+        } else if (op.op === "render") {
+          resultGraph = op.graph;
+          this.renderAIGraph(op.graph, options.layout);
+          applied++;
+          steps.push({
+            op,
+            label: `按语义图重绘（${op.graph.nodes.length} 个节点、${op.graph.edges.length} 条连线）`,
+            status: "applied",
+          });
+        } else if (op.op === "createNode") {
+          // 直接调用门面「参考节点 + 方向 + 类型」快速创建：与点击端口手柄同一路径，
+          // 已有节点几何、缩放/平移、激活态全部不受影响
+          const id = this.createNodeFrom(op.ref, op.dir, op.shape, op.text);
+          if (id) applied++;
+          const dirLabel: Record<PortDir, string> = {
+            top: "上方",
+            bottom: "下方",
+            left: "左侧",
+            right: "右侧",
+          };
+          steps.push({
+            op,
+            label: id
+              ? `在「${op.ref}」${dirLabel[op.dir]}新建节点「${op.text}」`
+              : `参考节点「${op.ref}」不存在或画布正忙，已跳过`,
+            status: id ? "applied" : "skipped",
+          });
+        } else if (op.op === "updateEdge") {
+          // 直接调用门面「更新一条边的首尾」：只重接这一条边，节点几何、
+          // 缩放/平移、选中态全部不受影响
+          const ok = this.updateEdge(op.ref, {
+            from: op.from,
+            fromDir: op.fromDir,
+            to: op.to,
+            toDir: op.toDir,
+            text: op.text,
+          });
+          if (ok) applied++;
+          steps.push({
+            op,
+            label: ok
+              ? op.text !== undefined
+                ? `更新「${op.ref.from} → ${op.ref.to}」这条连线的首尾与标签`
+                : `更新「${op.ref.from} → ${op.ref.to}」这条连线的首尾`
+              : `未找到「${op.ref.from} → ${op.ref.to}」这条连线或画布正忙，已跳过`,
+            status: ok ? "applied" : "skipped",
+          });
+        } else if (op.op === "replaceShape") {
+          // 直接调用门面「原地替换形状」：只换这一个节点的形状，位置/尺寸/
+          // 文字/连线全部保留，不重排整张图
+          const ok = this.replaceShape(op.ref, op.shape);
+          if (ok) applied++;
+          steps.push({
+            op,
+            label: ok
+              ? `把「${op.ref}」替换为 ${op.shape} 形状`
+              : `节点「${op.ref}」不存在、已是该形状或画布正忙，已跳过`,
+            status: ok ? "applied" : "skipped",
+          });
+        } else if (op.op === "setNodeText") {
+          // 直接调用门面「改节点文字」：只改这一个节点的文字并重排居中，
+          // 几何与连线全部不动
+          const ok = this.setNodeText(op.ref, op.text);
+          if (ok) applied++;
+          steps.push({
+            op,
+            label: ok
+              ? `把「${op.ref}」的文字改为「${op.text}」`
+              : `节点「${op.ref}」不存在、文字未变化或画布正忙，已跳过`,
+            status: ok ? "applied" : "skipped",
+          });
+        } else if (op.op === "removeNode") {
+          // 直接调用门面「删除节点」：节点连同关联连线一起删除，一条可逆命令
+          const ok = this.removeNode(op.ref);
+          if (ok) applied++;
+          steps.push({
+            op,
+            label: ok
+              ? `删除节点「${op.ref}」及其关联连线`
+              : `节点「${op.ref}」不存在或画布正忙，已跳过`,
+            status: ok ? "applied" : "skipped",
+          });
+        } else if (op.op === "removeEdge") {
+          // 直接调用门面「删除连线」：只摘除这一条连线，两端节点不动
+          const ok = this.removeEdge(op.ref);
+          if (ok) applied++;
+          const refLabel =
+            typeof op.ref === "string" ? op.ref : `${op.ref.from} → ${op.ref.to}`;
+          steps.push({
+            op,
+            label: ok
+              ? `删除连线「${refLabel}」`
+              : `未找到「${refLabel}」这条连线或画布正忙，已跳过`,
+            status: ok ? "applied" : "skipped",
+          });
+        }
       }
+    } finally {
+      // run 结束：收集到的全部增量命令合并为一条 "ai" 组合命令入栈
+      //（无改图动作则不产生记录；仅一条时直接入栈不包壳，栈形态与单步
+      // 操作一致）
+      const aiCmds = this.aiBatch;
+      this.aiBatch = null;
+      if (aiCmds.length === 1) this.history.record(aiCmds[0]!);
+      else if (aiCmds.length > 1) this.history.record(compose("ai", ...aiCmds));
     }
     // undo/redo / createNode 后语义图已变：重新导出，保证返回值与画布一致
     if (applied && !hasRender) resultGraph = toSemanticGraph(this.model.toJSON());
@@ -1117,7 +1341,7 @@ export class FlowChart {
     this.editing.deactivate();
     if (this.editing.editing) this.editing.cancelFor(this.editing.editing);
     this.hover.clearPort();
-    this.history.exec({
+    this.execCmd({
       type: "ai",
       redo: () => this.model.replaceAll(shapes, edges),
       undo: () => this.model.replaceAll(oldShapes, oldEdges),

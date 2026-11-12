@@ -103,8 +103,18 @@ export class FlowEdge extends Edge {
     this.points = pts
     this.from = pts[0]
     this.to = pts[pts.length - 1]
-    this.positionLabel()
+    // 程序化设置 label.text（建模特载/AI 渲染/粘贴/历史重放）可能未经 layout()：
+    // 渲染前按文本变化自愈重排，避免文字已改而标签仍隐藏（白盒靠 visible 门控）
+    if (this.labelSynced !== this.label.text) {
+      this.labelSynced = this.label.text
+      this.layout()
+    } else {
+      this.positionLabel()
+    }
   }
+
+  // 上一次已完成重排的标签文本（自愈同步的游标）
+  private labelSynced = ''
 
   // 标签重排（文本变化后调用，与 Shape.layout 同语义）：重测尺寸后按折线中点
   // 居中定位；空文本（无可视字符）隐藏，避免白底空盒遮线

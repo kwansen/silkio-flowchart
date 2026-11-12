@@ -108,4 +108,48 @@ describe("门面 updateEdge（更新一条边的首尾）", () => {
     expect(chart.updateEdge("e1", { fromDir: "right" })).toBe(true);
     expect(commands).toHaveLength(1);
   });
+
+  it("只改分支标签：text 给出即改（空串清除）；与首尾变更合成一条原子命令", () => {
+    const from = a();
+    const to = b();
+    const yes = stubEdge(from, to, "bottom", "top", "是");
+    // 真实 layout 依赖 DOM 文本测量：桩环境覆写为空操作
+    yes.layout = () => {};
+    const { chart, commands } = makeFlowChart([yes], [from, to]);
+    // 只改标签：端口不动
+    expect(
+      chart.updateEdge({ from: "a", to: "b", text: "是" }, { text: "通过" }),
+    ).toBe(true);
+    expect(yes.label.text).toBe("通过");
+    expect(yes.fromDir).toBe("bottom");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]!.type).toBe("text");
+    commands[0]!.undo();
+    expect(yes.label.text).toBe("是");
+    commands[0]!.redo();
+    expect(yes.label.text).toBe("通过");
+
+    // 与旧值相同：无变化不记命令
+    expect(chart.updateEdge({ from: "a", to: "b" }, { text: "通过" })).toBe(true);
+    expect(commands).toHaveLength(1);
+
+    // 空字符串清除标签
+    expect(chart.updateEdge("e1", { text: "" })).toBe(true);
+    expect(yes.label.text).toBe("");
+    expect(commands).toHaveLength(2);
+
+    // 标签 + 端口一起改：一条原子命令，undo 整体回退
+    const other = stubEdge(from, to, "bottom", "top", "否");
+    other.layout = () => {};
+    const { chart: chart2, commands: cmds2 } = makeFlowChart([other], [from, to]);
+    expect(
+      chart2.updateEdge({ from: "a", to: "b" }, { fromDir: "right", text: "通过" }),
+    ).toBe(true);
+    expect(other.fromDir).toBe("right");
+    expect(other.label.text).toBe("通过");
+    expect(cmds2).toHaveLength(1);
+    cmds2[0]!.undo();
+    expect(other.fromDir).toBe("bottom");
+    expect(other.label.text).toBe("否");
+  });
 });
