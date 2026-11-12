@@ -5,6 +5,7 @@ import type {
   HistoryCommand,
   HistorySnapshot,
   Plugin,
+  SerializedCommand,
 } from "@silker/core";
 import type { SelectionCapability, TextEditorCapability } from "@silker/core";
 import { selectionCapabilityKey, HISTORY_CAPABILITY } from "@silker/core";
@@ -22,13 +23,19 @@ import type { FlowChangeType, FlowData, FlowEdgeData, FlowNodeData, ShapeKind } 
 import type { Bounds } from "./snap";
 import type { RenderPayload } from "./commands";
 import type {
+  AIFlowEdge,
   AIFlowEditRequest,
   AIFlowGenerate,
   AIFlowGraph,
+  AIFlowHistoryState,
+  AIFlowNode,
   AIFlowRunOptions,
   AIFlowRunResult,
+  AIFlowSelection,
+  AIFlowStep,
 } from "./ai-protocol";
-import { parseAIFlowResponse, toSemanticGraph } from "./ai-protocol";
+import { parseAIFlowOps, toSemanticGraph } from "./ai-protocol";
+import { describeHistoryCommand } from "./ai-report";
 import { layoutFlowGraph } from "./auto-layout";
 import type { FlowLayoutOptions } from "./auto-layout";
 import { FLOW_AUTO_LAYOUT_CAPABILITY } from "./flow-layout-capability";
@@ -723,10 +730,65 @@ export class FlowChart {
     this.onChange?.("replace");
   }
 
-  // AI 生成：宿主适配器 → 语义图 → 程序布局 → 整图原子替换。
-  // 模型绝不接触 x/y 与端口方向（这两项是确定性几何问题）；一次生成为
-  // 一条可整体撤销的命令，提问/咨询类指令只返回回答、不改画布。
-  // 提示词用 defaultAIFlowPrompt(req) 渲染即可，宿主可自行定制。
+  // 当前选中快照（语义形态，只读）：选中形状按模型形状表取，连线以两端节点
+  // id + 分支标签表达。供 AI 上下文与宿主 UI 复用，不暴露 Shape/FlowEdge 实例
+  getSelection(): AIFlowSelection {
+    const ids = new Set<string>();
+    for (const item of this.sel.items) if (item.id) ids.add(item.id);
+    const nodes: AIFlowNode[] = [];
+    for (const shape of this.model.shapes.values()) {
+      if (shape.id && ids.has(shape.id))
+        nodes.push({ id: shape.id, shape: shape.kind, text: shape.text.text });
+    }
+    const edges: AIFlowEdge[] = [];
+    for (const edge of this.model.edges) {
+      if (!edge.id || !ids.has(edge.id)) continue;
+      const from = edge.fromNode.id;
+      const to = edge.toNode.id;
+      if (!from || !to) continue;
+      const text = edge.label.text;
+      edges.push({ from, to, ...(text ? { text } : {}) });
+    }
+    return { nodes, edges };
+  }
+
+  // 历史栈可读描述：把撤销/重做双栈的序列化命令转为文案（AI history 操作的
+  // 返回内容，宿主也可直接展示）。撤销栈最近在前，重做栈按重放次序
+  historyReport(): string {
+    const snap = this.history.exportJSON?.();
+    if (!snap) return "历史记录暂不可读（包含无法序列化的命令）";
+    const describe = (list: readonly SerializedCommand[]) =>
+      list
+        .map((s, i) => `${i + 1}. ${describeHistoryCommand(s, this.model)}`)
+        .join("\n");
+    // 导出按栈底→栈顶排列：撤销栈反转后最近变更在前，重做栈保持重放次序
+    const undoDesc = describe([...snap.undo].reverse());
+    const redoDesc = describe(snap.redo);
+    return [
+      undoDesc
+        ? `可撤销 ${snap.undo.length} 条（最近在前）：\n${undoDesc}`
+        : "没有可撤销的变更",
+      redoDesc
+        ? `可重做 ${snap.redo.length} 条（按重放次序）：\n${redoDesc}`
+        : "没有可重做的变更",
+    ].join("\n");
+  }
+
+  // 历史栈状态（AI 上下文）：能否撤销/重做 + 条数，模型据此决定输出 undo/redo
+  private aiHistoryState(): AIFlowHistoryState {
+    const snap = this.history.exportJSON?.();
+    return {
+      canUndo: this.history.canUndo,
+      canRedo: this.history.canRedo,
+      undoCount: this.history.undoCount ?? snap?.undo.length ?? 0,
+      redoCount: this.history.redoCount ?? snap?.redo.length ?? 0,
+    };
+  }
+
+  // AI 生成：宿主适配器 → 操作序列 → 逐条执行。改图仍只有 render（语义图 →
+  // 程序布局 → 整图原子替换），模型绝不接触 x/y 与端口方向；undo/redo 直接驱动
+  // 既有历史链（与手动 Ctrl+Z 同源），history 只读历史并入回答，回答类指令只
+  // 返回文本、不改画布。提示词用 defaultAIFlowPrompt(req) 渲染即可。
   async generate(
     prompt: string,
     options: AIFlowRunOptions = {},
@@ -735,6 +797,9 @@ export class FlowChart {
     if (!generate) {
       throw new Error("未配置 AI 生成适配器（FlowChartOptions.ai）");
     }
+    if (this.editing.editing) {
+      throw new Error("请先结束当前编辑再执行 AI 操作");
+    }
     if (this.interactions.busy) {
       throw new Error("画布交互进行中，请稍后重试");
     }
@@ -742,26 +807,87 @@ export class FlowChart {
     const req: AIFlowEditRequest = {
       prompt,
       graph,
+      selection: this.getSelection(),
+      historyState: this.aiHistoryState(),
       history: options.history ?? [],
     };
-    const parsed = parseAIFlowResponse(await generate(req));
-    // 纯回答：不触发布局，画布保持原样
-    if (!parsed.graph) {
-      return { graph, data: this.model.toJSON(), answer: parsed.answer };
+    const { ops, answer } = parseAIFlowOps(await generate(req));
+
+    // undo/redo 与改图混用即整体拒绝：否则"撤销后在同一批里改图"的时序歧义
+    // 会让结果取决于执行顺序，且一次 Ctrl+Z 无法整体回退
+    const hasControl = ops.some((o) => o.op === "undo" || o.op === "redo");
+    const hasRender = ops.some((o) => o.op === "render");
+    if (hasControl && hasRender) {
+      throw new Error("AI 的 undo/redo 操作不能与改图操作混用，请分开执行");
     }
-    const data = this.renderAIGraph(parsed.graph, options.layout);
-    return { graph: parsed.graph, data, answer: parsed.answer };
+
+    // 生成期间用户可能开始拖拽/编辑，执行前复查（与入口守卫对称）
+    if (this.editing.editing || this.interactions.busy) {
+      throw new Error("AI 操作被画布交互打断，请重试");
+    }
+
+    const steps: AIFlowStep[] = [];
+    const answers: string[] = answer ? [answer] : [];
+    let applied = 0;
+    // 本次生效的语义图：无 render 时为执行前的快照（undo/redo 后重新导出当前图）
+    let resultGraph = graph;
+    // 顺序执行：history 反映此前操作的效果；反应答只增删文本，不动画布
+    for (const op of ops) {
+      if (op.op === "undo") {
+        const ok = this.undo();
+        if (ok) applied++;
+        steps.push({
+          op,
+          label: ok ? "撤销最近一次变更" : "没有可撤销的变更，已跳过",
+          status: ok ? "applied" : "skipped",
+        });
+      } else if (op.op === "redo") {
+        const ok = this.redo();
+        if (ok) applied++;
+        steps.push({
+          op,
+          label: ok ? "重做最近一次被撤销的变更" : "没有可重做的变更，已跳过",
+          status: ok ? "applied" : "skipped",
+        });
+      } else if (op.op === "history") {
+        answers.push(this.historyReport());
+        steps.push({ op, label: "读取历史记录", status: "applied" });
+      } else if (op.op === "render") {
+        resultGraph = op.graph;
+        this.renderAIGraph(op.graph, options.layout);
+        applied++;
+        steps.push({
+          op,
+          label: `按语义图重绘（${op.graph.nodes.length} 个节点、${op.graph.edges.length} 条连线）`,
+          status: "applied",
+        });
+      }
+    }
+    // undo/redo 后语义图已变：重新导出，保证返回值与画布一致
+    if (applied && !hasRender) resultGraph = toSemanticGraph(this.model.toJSON());
+    return {
+      graph: resultGraph,
+      data: this.model.toJSON(),
+      answer: answers.filter(Boolean).join("\n\n") || undefined,
+      applied,
+      steps,
+    };
   }
 
-  // 语义图 → 画布数据：按能力键允许第三方布局器覆盖官方 DAG 分层布局，
-  // 落定后自动适应视口。也可直接用于「把一张语义图渲染出来」的非 AI 场景。
-  renderAIGraph(graph: AIFlowGraph, options?: FlowLayoutOptions): FlowData {
+  // 语义图 → 画布数据：按能力键允许第三方布局器覆盖官方 DAG 分层布局。
+  // 默认不动视口（缩放/平移保持原样，AI 改图对用户是"原地生效"而非重开一张图）；
+  // 「把一张语义图渲染出来」的全新画布场景可显式传 { fit: true } 落定后适应视口。
+  renderAIGraph(
+    graph: AIFlowGraph,
+    options?: FlowLayoutOptions,
+    viewport?: { fit?: boolean },
+  ): FlowData {
     const custom = this.app.capability(FLOW_AUTO_LAYOUT_CAPABILITY);
     const data = custom
       ? custom.layout(graph, options ?? {})
       : layoutFlowGraph(graph, options);
     this.setData(data);
-    this.fit();
+    if (viewport?.fit) this.fit();
     return data;
   }
 
@@ -810,7 +936,10 @@ export class FlowChart {
         edgeIds: edges.map((e) => e.id as string),
       },
     };
-    // 清掉选中框/端口/编辑覆盖层，避免它们指向被换出的旧实例
+    // 清掉选中框/端口/编辑覆盖层，避免它们指向被换出的旧实例；先按
+    // id/两端节点记录选中项，替换后对上同源新实例再选回（AI 改图不丢激活态）
+    const selShapeIds = selShapesOf(this.sel).map((s) => s.id as string);
+    const selEdgeBefore = selEdgeOf(this.sel);
     this.interactions.select(null);
     this.editing.deactivate();
     if (this.editing.editing) this.editing.cancelFor(this.editing.editing);
@@ -821,6 +950,23 @@ export class FlowChart {
       undo: () => this.model.replaceAll(oldShapes, oldEdges),
       toJSON: () => ({ kind: "flowchart.render", payload }),
     });
+    // 选回同源实例：形状按 id 对上；连线实例重建、id 不稳定，按两端节点对上
+    const restoredShapes = selShapeIds
+      .map((id) => byId.get(id))
+      .filter((s): s is Shape => !!s);
+    if (selEdgeBefore) {
+      const edge = edges.find(
+        (e) =>
+          e.fromNode.id === selEdgeBefore.fromNode.id &&
+          e.toNode.id === selEdgeBefore.toNode.id,
+      );
+      if (edge) this.interactions.select(edge);
+    } else if (restoredShapes.length === 1) {
+      this.interactions.select(restoredShapes[0]);
+    } else if (restoredShapes.length) {
+      for (const it of restoredShapes) it.selected = true;
+      this.sel.set(restoredShapes);
+    }
     this.app.requestRender();
     this.onChange?.("ai");
   }
@@ -918,25 +1064,28 @@ export class FlowChart {
   }
 
   // 撤销：编辑与拖拽会话中不响应（避免与进行中的变更互踩）；回退前先清空选中，
-  // 防止悬空引用（选中框/端口/编辑态指向已摘除的形状或连线）
-  undo() {
-    if (this.editing.editing || this.interactions.busy) return;
+  // 防止悬空引用（选中框/端口/编辑态指向已摘除的形状或连线）。
+  // 返回是否实际撤销了一条命令（AI 的 undo 操作据此生成执行反馈）
+  undo(): boolean {
+    if (this.editing.editing || this.interactions.busy) return false;
     const cmd = this.history.undo();
-    if (!cmd) return;
+    if (!cmd) return false;
     this.interactions.select(null);
     this.app.requestRender();
     // undo/redo 不产生新变更，仅通知宿主数据已回退（type 为产生该变更的命令类型）
     this.onChange?.(cmd.type as FlowChangeType);
+    return true;
   }
 
   // 重做：流程与 undo 对称，方向相反
-  redo() {
-    if (this.editing.editing || this.interactions.busy) return;
+  redo(): boolean {
+    if (this.editing.editing || this.interactions.busy) return false;
     const cmd = this.history.redo();
-    if (!cmd) return;
+    if (!cmd) return false;
     this.interactions.select(null);
     this.app.requestRender();
     this.onChange?.(cmd.type as FlowChangeType);
+    return true;
   }
 
   get canUndo(): boolean {

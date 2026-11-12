@@ -142,7 +142,7 @@ function onKeydown(event: KeyboardEvent) {
         id="ai-empty"
         class="mt-10 text-center text-xs leading-[1.9] text-gray-400"
       >
-        输入指令生成或修改流程，如：<br />画一个用户注册审批流程，包含验证码校验和失败重试<br />把「校验通过？」改成「是否为管理员」<br />在末尾加一个「发送通知」节点<br />这个流程图讲了什么 / 撤销上一步
+        输入指令生成或修改流程，如：<br />画一个用户注册审批流程，包含验证码校验和失败重试<br />把「校验通过？」改成「是否为管理员」<br />在末尾加一个「发送通知」节点<br />我选中了什么 / 撤销上一步 / 最近改了什么
       </div>
 
       <div v-for="m in messages" :key="m.id">
@@ -181,9 +181,20 @@ function onKeydown(event: KeyboardEvent) {
           >
             {{ m.text }}
           </div>
-          <div v-if="m.detail" class="flex items-start gap-1.5 text-xs leading-5 text-gray-600">
-            <span class="text-emerald-500">✓</span>
-            <span>{{ m.detail }}</span>
+          <!-- 执行反馈链：改图 / 撤销 / 重做 / 读取历史逐条展示 -->
+          <div v-if="m.steps?.length" class="flex flex-col gap-1">
+            <div
+              v-for="(s, i) in m.steps"
+              :key="i"
+              class="flex items-start gap-1.5 text-xs leading-5"
+            >
+              <span :class="s.status === 'applied' ? 'text-emerald-500' : 'text-gray-300'">{{
+                s.status === "applied" ? "✓" : "–"
+              }}</span>
+              <span :class="s.status === 'applied' ? 'text-gray-600' : 'text-gray-400'">{{
+                s.label
+              }}</span>
+            </div>
           </div>
         </div>
       </div>

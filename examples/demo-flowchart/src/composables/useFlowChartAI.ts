@@ -158,18 +158,19 @@ export function useFlowChartAI(getFlowChart: () => FlowChart | null) {
     const flowchart = getFlowChart();
     if (!flowchart) return;
 
-    // 对话历史（不含本次指令）：助手轮无回答文本时以执行反馈摘要代之
+    // 对话历史（不含本次指令）：助手轮无回答文本时以执行反馈链代之
     const history: AIFlowTurn[] = messages.value
       .filter((m) => m.role !== "error")
       .map(
         (m): AIFlowTurn => ({
           role: m.role === "user" ? "user" : "assistant",
-          text: m.text || m.detail || "",
+          text:
+            m.text ||
+            (m.steps ?? []).map((s) => s.label).join("；"),
         }),
       )
       .filter((t) => t.text);
 
-    const before = JSON.stringify(flowchart.toJSON());
     // 标记本次生成：切换/新建文档会递增 generation，使迟到的结果被丢弃
     const gen = ++generation;
     prompt.value = "";
@@ -179,15 +180,13 @@ export function useFlowChartAI(getFlowChart: () => FlowChart | null) {
     try {
       const result = await flowchart.generate(text, { history });
       if (gen !== generation) return;
-      const changed = JSON.stringify(result.data) !== before;
       const reasoning = pending.value?.reasoning || undefined;
       pending.value = null;
       append({
         role: "assistant",
-        text: result.answer ?? (changed ? "" : "（未产生任何操作）"),
-        detail: changed
-          ? `已生成 ${result.data.nodes.length} 个节点、${result.data.edges.length} 条连线（Ctrl+Z 可撤销）`
-          : undefined,
+        // 有回答就展示回答；改图/撤销/重做无回答时以反馈链说明执行结果
+        text: result.answer ?? (result.applied ? "" : "（未产生任何操作）"),
+        steps: result.steps.length ? result.steps : undefined,
         reasoning,
       });
     } catch (e) {

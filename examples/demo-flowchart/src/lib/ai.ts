@@ -1,4 +1,6 @@
 // AI 侧边栏共享的数据模型与小工具（纯 TS，无 DOM 事件绑定）
+import type { AIFlowStep } from "@silker/flowchart";
+
 export interface AIConfig {
   baseURL: string;
   apiKey: string;
@@ -10,7 +12,8 @@ export interface ChatMessage {
   // user = 用户指令；assistant = 回答/执行反馈；error = 失败信息
   role: "user" | "assistant" | "error";
   text: string;
-  detail?: string; // 画布变更摘要（以 ✓ 反馈链展示）
+  // 逐步执行反馈（改图 / 撤销 / 重做 / 读取历史），以 ✓/– 反馈链展示
+  steps?: AIFlowStep[];
   reasoning?: string; // 思考过程（完成后保留可折叠回看）
 }
 

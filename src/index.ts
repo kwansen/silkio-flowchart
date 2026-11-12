@@ -44,11 +44,14 @@ export type {
   FlowData,
   FlowChangeType,
 } from './data'
-// AI 生成：语义图协议（LLM 只输出拓扑语义）/ 默认提示词 / 容错解析 /
+// AI 生成：语义图协议（LLM 只输出拓扑语义）/ 操作序列（改图 / 撤销 / 重做 /
+// 查历史 / 回答）/ 选中与历史上下文 / 默认提示词 / 容错解析 /
 // 确定性 DAG 自动布局（把语义图编译成带 x/y 与端口方向的 FlowData）
 export {
   defaultAIFlowPrompt,
   normalizeAIFlowGraph,
+  normalizeAIFlowOps,
+  parseAIFlowOps,
   parseAIFlowResponse,
   inferFlowShape,
   toSemanticGraph,
@@ -60,6 +63,15 @@ export type {
   AIFlowGraph,
   NormalizedFlowNode,
   NormalizedFlowGraph,
+  AIFlowOp,
+  AIFlowRenderOp,
+  AIFlowUndoOp,
+  AIFlowRedoOp,
+  AIFlowHistoryOp,
+  AIFlowAnswerOp,
+  AIFlowSelection,
+  AIFlowHistoryState,
+  AIFlowStep,
   AIFlowTurn,
   AIFlowEditRequest,
   AIFlowGenerate,

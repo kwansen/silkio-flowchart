@@ -51,9 +51,12 @@ describe("AI 语义图协议", () => {
   });
 
   it("脏字段整体拒绝；悬空边丢弃；文本引用与重复 id 规整", () => {
-    expect(() => normalizeAIFlowGraph({ nodes: [{ text: "" }], edges: [] })).toThrow(
-      /缺少非空 text/,
-    );
+    // text 非字符串才是脏字段；空字符串合法（画布允许无文字节点，原样回显）
+    expect(() =>
+      normalizeAIFlowGraph({ nodes: [{ text: 42 }], edges: [] }),
+    ).toThrow(/缺少非空 text/);
+    const emptyText = normalizeAIFlowGraph({ nodes: [{ text: "" }], edges: [] });
+    expect(emptyText.nodes[0]).toMatchObject({ id: "n1", shape: "rect", text: "" });
     const g = normalizeAIFlowGraph({
       nodes: [
         { id: "a", text: "开始" },
@@ -90,6 +93,8 @@ describe("AI 语义图协议", () => {
     const prompt = defaultAIFlowPrompt({
       prompt: "画一个审批流程",
       graph: toSemanticGraph({ nodes: [], edges: [] }),
+      selection: { nodes: [], edges: [] },
+      historyState: { canUndo: false, canRedo: false, undoCount: 0, redoCount: 0 },
       history: [],
     });
     expect(prompt).toContain("严格禁止输出 x、y");
