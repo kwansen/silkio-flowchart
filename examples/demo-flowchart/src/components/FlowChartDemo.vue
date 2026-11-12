@@ -281,6 +281,9 @@ function replaceShape(kind: ShapeKind) {
 function fit() {
   flowchart?.fit();
 }
+function center() {
+  flowchart?.center();
+}
 
 function download(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -401,6 +404,7 @@ onUnmounted(() => {
         @add-shape="addShape"
         @replace-shape="replaceShape"
         @fit="fit"
+        @center="center"
         @copy-json="copyJson"
         @export-json="exportJson"
         @export-image="exportImage"

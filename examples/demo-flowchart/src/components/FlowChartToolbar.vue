@@ -21,6 +21,7 @@ const emit = defineEmits<{
   "add-shape": [kind: ShapeKind, text: string];
   "replace-shape": [kind: ShapeKind];
   fit: [];
+  center: [];
   "copy-json": [];
   "export-json": [];
   "export-image": [];
@@ -160,6 +161,9 @@ const menuItemClass =
 
     <button id="fit-btn" :class="btnClass" title="适应视图" aria-label="适应视图" @click="emit('fit')">
       <Icon name="i-fit" />
+    </button>
+    <button id="center-btn" :class="btnClass" title="居中" aria-label="居中" @click="emit('center')">
+      <Icon name="i-center" />
     </button>
     <span class="mx-0.5 h-4 w-px bg-gray-200"></span>
 
