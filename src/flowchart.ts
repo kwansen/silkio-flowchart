@@ -848,7 +848,8 @@ export class FlowChart {
   }
 
   // 当前选中快照（语义形态，只读）：选中形状按模型形状表取，连线以两端节点
-  // id + 分支标签表达。供 AI 上下文与宿主 UI 复用，不暴露 Shape/FlowEdge 实例
+  // id + 分支标签 + 当前出入端口方向表达（方向缺失会导致模型重绘时接错侧）。
+  // 供 AI 上下文与宿主 UI 复用，不暴露 Shape/FlowEdge 实例
   getSelection(): AIFlowSelection {
     const ids = new Set<string>();
     for (const item of this.sel.items) if (item.id) ids.add(item.id);
@@ -864,7 +865,13 @@ export class FlowChart {
       const to = edge.toNode.id;
       if (!from || !to) continue;
       const text = edge.label.text;
-      edges.push({ from, to, ...(text ? { text } : {}) });
+      edges.push({
+        from,
+        to,
+        ...(text ? { text } : {}),
+        fromDir: edge.fromDir,
+        toDir: edge.toDir,
+      });
     }
     return { nodes, edges };
   }

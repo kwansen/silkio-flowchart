@@ -184,7 +184,25 @@ describe("AI 语义图协议", () => {
     expect(fresh.edges).toEqual(laid.edges);
   });
 
-  it("形状推断与当前图 → 语义图（剥离全部几何字段）", () => {
+  it("语义边可选 fromDir/toDir：合法值保留、非法值丢弃、坐标仍被剥离", () => {
+    const g = normalizeAIFlowGraph({
+      nodes: [
+        { id: "a", text: "校验通过？" },
+        { id: "b", text: "返回成功" },
+        { id: "c", text: "返回错误" },
+      ],
+      edges: [
+        { from: "a", to: "b", text: "是", fromDir: "RIGHT", toDir: "top" },
+        { from: "a", to: "c", text: "否", fromDir: "below", toDir: 3 },
+      ],
+    });
+    expect(g.edges[0]).toEqual({ from: "a", to: "b", text: "是", fromDir: "right", toDir: "top" });
+    // 非法方向静默丢弃（退回自动选边），不让整次 render 失败
+    expect(g.edges[1]).toEqual({ from: "a", to: "c", text: "否" });
+    expect(JSON.stringify(g)).not.toMatch(/"(x|y|width|height)":/);
+  });
+
+  it("形状推断与当前图 → 语义图（剥离坐标尺寸，保留边端口方向）", () => {
     expect(inferFlowShape({ text: "开始" })).toBe("ellipse");
     expect(inferFlowShape({ text: "校验通过？" })).toBe("diamond");
     expect(inferFlowShape({ text: "读取输入" })).toBe("parallelogram");
@@ -193,8 +211,15 @@ describe("AI 语义图协议", () => {
       nodes: [{ id: "a", shape: "rect", x: 10, y: 20, width: 160, height: 99, text: "步骤" }],
       edges: [{ from: "a", to: "a", fromDir: "right", toDir: "top", text: "重试" }],
     });
-    expect(JSON.stringify(semantic)).not.toMatch(/"(x|y|width|height|fromDir|toDir)":/);
-    expect(semantic.edges[0]).toEqual({ from: "a", to: "a", text: "重试" });
+    // 坐标尺寸剥离；fromDir/toDir 是当前实际出入端口，必须保留供模型改图时带回
+    expect(JSON.stringify(semantic)).not.toMatch(/"(x|y|width|height)":/);
+    expect(semantic.edges[0]).toEqual({
+      from: "a",
+      to: "a",
+      text: "重试",
+      fromDir: "right",
+      toDir: "top",
+    });
   });
 
   it("默认提示词明确禁止模型输出坐标与端口方向", () => {
@@ -236,6 +261,35 @@ describe("语义图 → FlowData 自动布局", () => {
     expect(byId.get("handle")!.x).toBeGreaterThan(byId.get("start")!.x);
     const main = data.edges.find((e) => e.from === "start" && e.to === "handle");
     expect(main).toMatchObject({ fromDir: "right", toDir: "left" });
+  });
+
+  it("语义边显式 fromDir/toDir 覆盖自动选边；自动分支避开被占用出口", () => {
+    const data = layoutFlowGraph({
+      nodes: [
+        { id: "start", text: "开始" },
+        { id: "check", text: "校验通过？" },
+        { id: "ok", text: "返回成功" },
+        { id: "retry", text: "返回错误" },
+      ],
+      edges: [
+        { from: "start", to: "check" },
+        // 模型固定「是」从右出、「否」从下出
+        { from: "check", to: "ok", text: "是", fromDir: "right" },
+        { from: "check", to: "retry", text: "否", fromDir: "bottom" },
+      ],
+    });
+    const byPair = new Map(data.edges.map((e) => [`${e.from}→${e.to}`, e]));
+    expect(byPair.get("check→ok")).toMatchObject({ fromDir: "right", toDir: "top" });
+    expect(byPair.get("check→retry")).toMatchObject({ fromDir: "bottom", toDir: "top" });
+    // toDir 也可覆盖（回边显式指定走左侧绕行）
+    const loop = layoutFlowGraph({
+      nodes: [
+        { id: "a", text: "开始" },
+        { id: "b", text: "处理" },
+      ],
+      edges: [{ from: "b", to: "a", text: "重试", fromDir: "top", toDir: "left" }],
+    });
+    expect(loop.edges[0]).toMatchObject({ fromDir: "top", toDir: "left" });
   });
 
   it("循环图：回边单独走外侧绕行端口，分层不死循环", () => {

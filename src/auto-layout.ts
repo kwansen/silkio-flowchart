@@ -48,6 +48,9 @@ interface LayoutEdge {
   from: number;
   to: number;
   text?: string;
+  // 语义边显式给出的端口方向：布局器原样落边，不再自动选边
+  fromDir?: PortDir;
+  toDir?: PortDir;
 }
 
 export function layoutFlowGraph(
@@ -72,7 +75,13 @@ export function layoutFlowGraph(
     const from = idToIdx.get(e.from);
     const to = idToIdx.get(e.to);
     if (from === undefined || to === undefined) continue;
-    edges.push({ from, to, ...(e.text ? { text: e.text } : {}) });
+    edges.push({
+      from,
+      to,
+      ...(e.text ? { text: e.text } : {}),
+      ...(e.fromDir ? { fromDir: e.fromDir } : {}),
+      ...(e.toDir ? { toDir: e.toDir } : {}),
+    });
   }
   const out: number[][] = g.nodes.map(() => []);
   edges.forEach((e, i) => out[e.from]!.push(i));
@@ -234,6 +243,8 @@ export function layoutFlowGraph(
   // ---- 6) 端口方向：全部显式给出（FlowEdge 创建时冻结，事后移动不会重选边）----
   // 前向边沿主方向出入；多分支按目标副轴位置散开到左/右（LR 为上/下）出口，
   // 避免菱形多条边共用一个底部端口；回边统一走外侧同侧出入，由正交路由绕行。
+  // 语义边显式给出的方向优先：原样落边，不参与自动散开（同节点其余自动分支
+  // 避开已被占用的方向再分配，避免端口相撞）。
   const branchFrom = new Map<number, PortDir>();
   const forwardOut = new Map<number, number[]>();
   edges.forEach((e, i) => {
@@ -246,24 +257,41 @@ export function layoutFlowGraph(
   };
   for (const list of forwardOut.values()) {
     if (list.length < 2) continue;
-    list.sort(
+    const auto = list.filter((ei) => !edges[ei]!.fromDir);
+    if (auto.length < 2) continue;
+    // 已被显式方向占用的出口从候选序列中剔除；全被占满时退回主方向
+    const used = new Set(
+      list.map((ei) => edges[ei]!.fromDir).filter((d): d is PortDir => !!d),
+    );
+    const dirs = sideDirs[direction];
+    const order: PortDir[] = [dirs.first, dirs.mid, dirs.last].filter((d) => !used.has(d));
+    if (!order.length) order.push(dirs.mid);
+    auto.sort(
       (a, b) =>
         slotById.get(g.nodes[edges[a]!.to]!.id)!.pos -
         slotById.get(g.nodes[edges[b]!.to]!.id)!.pos,
     );
-    const dirs = sideDirs[direction];
-    list.forEach((ei, k) => {
-      branchFrom.set(ei, k === 0 ? dirs.first : k === list.length - 1 ? dirs.last : dirs.mid);
+    auto.forEach((ei, k) => {
+      branchFrom.set(
+        ei,
+        k === 0
+          ? order[0]!
+          : k === auto.length - 1
+            ? order[order.length - 1]!
+            : (order[1] ?? order[0]!),
+      );
     });
   }
   const edgeData: FlowEdgeData[] = edges.map((e, i) => {
     const backward = back.has(i) || layer[e.to]! <= layer[e.from]!;
-    const fromDir: PortDir = backward
-      ? direction === "TB" ? "right" : "bottom"
-      : branchFrom.get(i) ?? (direction === "TB" ? "bottom" : "right");
-    const toDir: PortDir = backward
-      ? direction === "TB" ? "right" : "bottom"
-      : direction === "TB" ? "top" : "left";
+    const fromDir: PortDir = e.fromDir ??
+      (backward
+        ? direction === "TB" ? "right" : "bottom"
+        : branchFrom.get(i) ?? (direction === "TB" ? "bottom" : "right"));
+    const toDir: PortDir = e.toDir ??
+      (backward
+        ? direction === "TB" ? "right" : "bottom"
+        : direction === "TB" ? "top" : "left");
     return {
       from: g.nodes[e.from]!.id,
       to: g.nodes[e.to]!.id,

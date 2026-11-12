@@ -67,8 +67,9 @@ export const initialData: FlowData = {
   edges: [
     { from: "start", to: "handle" },
     { from: "handle", to: "check" },
-    { from: "check", to: "ok" },
-    { from: "check", to: "retry" },
+    // 分支线带标签与显式出入端口：「是」从判断节点右侧出、左侧进成功端
+    { from: "check", to: "ok", text: "是", fromDir: "right", toDir: "left" },
+    { from: "check", to: "retry", text: "否", fromDir: "bottom", toDir: "top" },
     // 演示四向端口与方向锁定：从「开始」底部竖直引出，竖直接入「返回错误」顶部
     { from: "start", to: "retry", fromDir: "bottom", toDir: "top" },
   ],

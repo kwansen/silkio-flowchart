@@ -41,11 +41,15 @@ export interface AIFlowNode {
 }
 
 // 语义边：from/to 为节点 id（也容忍节点文本唯一匹配），text 为分支标签
-// （判断节点的「是/否」「通过/驳回」等）。绝不含端口方向。
+// （判断节点的「是/否」「通过/驳回」等）。fromDir/toDir 可选：模型需要固定
+// 某条边「从起点哪侧出、进终点哪侧」（如判断分支「是」右出、「否」下出）时
+// 给出；省略则由布局器按拓扑与相对位置自动选边。仍禁止坐标类几何字段。
 export interface AIFlowEdge {
   from: string;
   to: string;
   text?: string;
+  fromDir?: PortDir;
+  toDir?: PortDir;
 }
 
 export interface AIFlowGraph {
@@ -157,7 +161,8 @@ export interface AIFlowTurn {
   text: string;
 }
 
-// 生成适配器的输入：用户指令 + 当前画布的语义图快照（带 id，已剥离坐标/方向）
+// 生成适配器的输入：用户指令 + 当前画布的语义图快照（带 id 与边的当前端口
+// 方向，已剥离坐标尺寸）
 // + 选中上下文 + 历史栈状态 + 多轮对话上下文。快照用于「在现有流程上改」类指令：
 // 模型保留未变节点的 id，程序据此重新布局整张图。
 export interface AIFlowEditRequest {
@@ -250,7 +255,9 @@ export function inferFlowShape(node: {
   return "rect";
 }
 
-// 当前画布 → 语义图：剥掉全部几何信息（x/y/尺寸/端口方向），只留拓扑与文本。
+// 当前画布 → 语义图：剥掉坐标与尺寸（x/y/width/height），但保留每条边当前
+// 实际的出入端口方向（fromDir/toDir）——模型改图时据此原样带回未变更边的
+// 走向，只有需要改走向的边才调整方向，避免整图重绘把连线接错侧。
 // 供提示词上下文与「在现有图上修改」使用。
 export function toSemanticGraph(data: FlowData): AIFlowGraph {
   return {
@@ -263,6 +270,8 @@ export function toSemanticGraph(data: FlowData): AIFlowGraph {
       from: e.from,
       to: e.to,
       ...(e.text ? { text: e.text } : {}),
+      ...(e.fromDir ? { fromDir: e.fromDir } : {}),
+      ...(e.toDir ? { toDir: e.toDir } : {}),
     })),
   };
 }
@@ -273,8 +282,9 @@ export function toSemanticGraph(data: FlowData): AIFlowGraph {
 // 份几何 placeNodeInDirection：由布局里的相对方位推断手柄方向，沿该方向在相邻
 // 已落位节点外侧以 CLICK_CREATE_GAP 落位（「在 a 下面加节点」= 点击 a 下方手柄），
 // 链式新增依次沿前序新节点继续落位。多父/孤立/会重叠等复杂拓扑退回锚点平移
-// （相邻共有节点位移均值，无则全局均值）。新增连线省略端口方向，由 FlowEdge
-// 按实际位置自动选边。用户手动排好的版式不再被程序分层布局整体打回。
+// （相邻共有节点位移均值，无则全局均值）。新增连线保留语义边显式给出的
+// 端口方向（没有则由 FlowEdge 按实际位置自动选边）。用户手动排好的版式
+// 不再被程序分层布局整体打回。
 export function mergeFlowGeometry(current: FlowData, laid: FlowData): FlowData {
   type Geom = { x: number; y: number; width: number; height: number };
   const geomOf = (n: FlowNodeData): Geom => ({
@@ -389,7 +399,8 @@ export function mergeFlowGeometry(current: FlowData, laid: FlowData): FlowData {
   return {
     nodes: laid.nodes.map((n) => resultById.get(n.id ?? "") ?? n),
     edges: laid.edges.map((e) => {
-      // 既有连线沿用冻结的端口方向；新连线省略方向，由 FlowEdge 按实际位置选边
+      // 既有连线沿用冻结的端口方向；新连线保留语义边显式方向，没有则由
+      // FlowEdge 按实际位置选边
       const cur = dirByKey.get(edgeKey(e))?.shift();
       return cur ? { ...e, fromDir: cur.fromDir, toDir: cur.toDir } : e;
     }),
@@ -448,16 +459,30 @@ export function normalizeAIFlowGraph(raw: unknown): NormalizedFlowGraph {
 
   const edges: AIFlowEdge[] = [];
   const seen = new Set<string>();
+  // 出入端口方向：合法值保留（布局器按显式方向落边），非法值静默丢弃——
+  // 模型写错方向不应让整次 render 失败，退回自动选边即可
+  const dirOf = (v: unknown): PortDir | undefined => {
+    const d = typeof v === "string" ? v.trim().toLowerCase() : "";
+    return PORT_DIRS.includes(d as PortDir) ? (d as PortDir) : undefined;
+  };
   const rawEdges = Array.isArray(data.edges) ? data.edges : [];
   for (const e of rawEdges as Array<AIFlowEdge | null>) {
     const from = resolveRef(e?.from);
     const to = resolveRef(e?.to);
     if (!from || !to) continue;
     const text = typeof e?.text === "string" && e.text.trim() ? e.text.trim() : undefined;
+    const fromDir = dirOf(e?.fromDir);
+    const toDir = dirOf(e?.toDir);
     const key = `${from}→${to}:${text ?? ""}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    edges.push({ from, to, ...(text ? { text } : {}) });
+    edges.push({
+      from,
+      to,
+      ...(text ? { text } : {}),
+      ...(fromDir ? { fromDir } : {}),
+      ...(toDir ? { toDir } : {}),
+    });
   }
   return { nodes, edges };
 }
@@ -633,7 +658,7 @@ export function defaultAIFlowPrompt(req: AIFlowEditRequest): string {
   return [
     "你是流程图助手。需要生成或修改流程图、撤销/重做、查看历史时，只输出一个 JSON 对象，不要输出解释文字，不要用代码块包裹。",
     "输出格式（按指令选择一种）：",
-    '1. 改图：{"ops":[{"op":"render","graph":{"nodes":[{"id":"n1","shape":"ellipse","text":"开始"},{"id":"n2","shape":"diamond","text":"校验通过？"}],"edges":[{"from":"n1","to":"n2"},{"from":"n2","to":"n3","text":"是"}]}}]}',
+    '1. 改图：{"ops":[{"op":"render","graph":{"nodes":[{"id":"n1","shape":"ellipse","text":"开始"},{"id":"n2","shape":"diamond","text":"校验通过？"}],"edges":[{"from":"n1","to":"n2"},{"from":"n2","to":"n3","text":"是","fromDir":"right"}]}}]}',
     '   也可以直接输出语义图 {"nodes":[...],"edges":[...]}（等价于一条 render 操作）。',
     '2. 撤销 / 重做：{"ops":[{"op":"undo"}]} 或 {"ops":[{"op":"redo"}]}；可连写多次表示连续撤销/重做，但不能与改图操作写在同一批。',
     '3. 查看历史：{"ops":[{"op":"history"}]}（只读，程序会把可撤销/可重做的变更列表并入回答）。',
@@ -653,7 +678,8 @@ export function defaultAIFlowPrompt(req: AIFlowEditRequest): string {
     "- nodes[].shape：只允许 rect（步骤）、diamond（判断）、ellipse（开始/结束）、parallelogram（输入/输出）、hexagon（准备）、database（存储）。也可以用 role 字段代替（start/end/decision/io/process/data），程序会自动推断形状。",
     "- nodes[].text：节点文字，简短；判断节点写成问句。允许 text 为空字符串（画布上存在无文字的节点，原样保留即可，不要替它虚构文字）。",
     "- edges[].from / edges[].to：必须是 nodes 中存在的 id。edges[].text 只写分支短标签（是/否、通过/驳回、超时等），普通连线省略。",
-    "严格禁止输出 x、y、width、height、坐标、位置、fromDir、toDir、端口方向、连线出入边等几何字段：布局和连线方向由程序自动计算，输出这些字段会导致生成失败。",
+    "- edges[].fromDir / edges[].toDir（可选）：固定这条线从起点哪一侧出（fromDir）与进入终点哪一侧（toDir），取值 top / bottom / left / right。判断节点想固定分支走向（如「是」从右出、「否」从下出）、或用户明确说了出入方向时给出；省略则由程序按布局自动选边。修改现有图时，下方「当前流程图」的边上带有 fromDir/toDir（即当前实际走向）：未变更的边必须原样带上这两个字段，只有走向需要变化的边才修改它们。",
+    "严格禁止输出 x、y、width、height、坐标、位置等几何字段：布局与坐标由程序自动计算，输出这些字段会导致生成失败。端口方向只允许出现在 edges[].fromDir/toDir 与 updateEdge 操作中，其余位置一律不要输出。",
     "绘图规则：",
     "- 有且仅有一个开始节点；判断节点的每条出边都要写分支标签；流程要能走到结束节点。",
     "- 循环/回退用一条指回已有节点的边表示，不要复制出重复节点；不要出现没有连线的孤立节点。",
@@ -683,7 +709,7 @@ export function defaultAIFlowPrompt(req: AIFlowEditRequest): string {
       : `当前选中（只读上下文，共 ${selection.nodes.length} 个节点、${selection.edges.length} 条连线）：`,
     ...(selEmpty ? [] : [JSON.stringify(selection)]),
     "",
-    "当前流程图（语义图，已剥离全部坐标与方向信息）：",
+    "当前流程图（语义图，已剥离坐标；edges[].fromDir/toDir 为该连线当前实际的出入端口）：",
     JSON.stringify(req.graph),
     "",
     `用户指令：${req.prompt}`,
