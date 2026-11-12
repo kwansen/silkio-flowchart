@@ -16,7 +16,7 @@ import type { ClipboardCapability, ClipboardEntry } from "@silker/core";
 import { officialPlugins } from "@silker/preset";
 import { BuiltinShapes, SHAPE_REGISTRY_CAPABILITY } from "./shape-registry";
 import type { ShapeRegistryCapability } from "./shape-registry";
-import { FlowEdge } from "./FlowEdge";
+import { FlowEdge, OPPOSITE_DIR } from "./FlowEdge";
 import type { FlowEdgeHints, PortDir } from "./FlowEdge";
 import type { Shape } from "./Shape";
 import type { FlowChangeType, FlowData, FlowEdgeData, FlowNodeData, ShapeKind } from "./data";
@@ -34,7 +34,8 @@ import type {
   AIFlowSelection,
   AIFlowStep,
 } from "./ai-protocol";
-import { parseAIFlowOps, toSemanticGraph } from "./ai-protocol";
+import { mergeFlowGeometry, parseAIFlowOps, toSemanticGraph } from "./ai-protocol";
+import { createNodeInDirection } from "./quick-create";
 import { describeHistoryCommand } from "./ai-report";
 import { layoutFlowGraph } from "./auto-layout";
 import type { FlowLayoutOptions } from "./auto-layout";
@@ -44,8 +45,8 @@ import type { SnapCapability } from "./snap-capability";
 import { BuiltinEdgeRouter, EDGE_ROUTER_CAPABILITY } from "./edge-router";
 import type { EdgeRouterCapability } from "./edge-router";
 import { SelectionOverlay } from "./overlay";
-import { marqueeHits, portPos, unionBounds } from "./geometry";
-import { bindFlowchartCommands, shapeData } from "./commands";
+import { dominantPortDir, marqueeHits, portPos, unionBounds } from "./geometry";
+import { bindFlowchartCommands, reconnectCommand, shapeData } from "./commands";
 import { createFlowchartCodec } from "./history-codec";
 import type { DeletePayload } from "./history-codec";
 import { FlowModel } from "./model";
@@ -378,6 +379,122 @@ export class FlowChart {
     this.app.requestRender();
     this.onChange?.("add");
     return shape.id as string;
+  }
+
+  // 按 id 或唯一文字解析形状：门面程序化入口（新建/换边）共用
+  private resolveShape(ref: string): Shape | undefined {
+    const byId = this.model.shapes.get(ref);
+    if (byId) return byId;
+    const hits = [...this.model.shapes.values()].filter((s) => s.text.text === ref);
+    return hits.length === 1 ? hits[0] : undefined;
+  }
+
+  // 在参考节点的指定方向新建节点并自动连边：与点击端口手柄完全同一条路径
+  //（共享 createNodeInDirection：同尺寸、CLICK_CREATE_GAP 间距、中轴对齐、
+  // 「注册节点 + 创建连线」一条原子命令）。ref 为参考节点 id 或唯一文字；
+  // kind 省略时与参考节点同类型；text 可为空（无文字节点合法）。
+  // 返回新节点 id；参考节点不存在或画布交互/编辑进行中返回 null。
+  // 程序化入口不改变选中态与视口（点击手柄的选中/激活由交互层负责），
+  // 因此 AI 调用它不会重置缩放、平移或用户的激活态。
+  createNodeFrom(
+    ref: string,
+    dir: PortDir,
+    kind?: ShapeKind,
+    text = "",
+  ): string | null {
+    if (this.interactions.busy || this.editing.editing) return null;
+    const source = this.resolveShape(ref);
+    if (!source) return null;
+    const shape = createNodeInDirection(
+      { model: this.model, router: this.router, history: this.history },
+      source,
+      dir,
+      kind ?? source.kind,
+      text,
+    );
+    this.app.requestRender();
+    this.onChange?.("add");
+    return shape.id as string;
+  }
+
+  // 更新一条边的首尾：可改两端节点（from/to）与两端端口方向（fromDir/toDir），
+  // 省略的字段保持原值；未显式给方向时按最终拓扑的主导方向自动选边。
+  // ref 为边 id，或语义定位 { from, to, text? }（同对节点多条分支边用标签区分）。
+  // 与拖拽端点重接同源（reattachEnd + reconnectCommand），两端合成一条原子命令，
+  // 一次 Ctrl+Z 整体回退；不动任何节点几何、视口与选中态。返回是否生效。
+  updateEdge(
+    ref: string | { from: string; to: string; text?: string },
+    patch: {
+      from?: string;
+      fromDir?: PortDir;
+      to?: string;
+      toDir?: PortDir;
+    },
+  ): boolean {
+    if (this.interactions.busy || this.editing.editing) return false;
+    const edge =
+      typeof ref === "string"
+        ? this.model.edges.find((e) => e.id === ref)
+        : this.model.edges.find(
+            (e) =>
+              e.fromNode.id === ref.from &&
+              e.toNode.id === ref.to &&
+              (ref.text === undefined || e.label.text === ref.text),
+          );
+    if (!edge) return false;
+    const oldFromNode = edge.fromNode;
+    const oldFromDir = edge.fromDir;
+    const oldToNode = edge.toNode;
+    const oldToDir = edge.toDir;
+    const newFromNode = patch.from ? this.resolveShape(patch.from) : oldFromNode;
+    const newToNode = patch.to ? this.resolveShape(patch.to) : oldToNode;
+    if (!newFromNode || !newToNode) return false;
+    const touchFrom = patch.from !== undefined || patch.fromDir !== undefined;
+    const touchTo = patch.to !== undefined || patch.toDir !== undefined;
+    // 按最终两端拓扑算主导方向，避免「先改 from 再改 to」时自动选边参考到旧端点
+    const autoDir = dominantPortDir(newFromNode, newToNode);
+    const finalFromDir = touchFrom ? (patch.fromDir ?? autoDir) : oldFromDir;
+    const finalToDir = touchTo
+      ? (patch.toDir ?? OPPOSITE_DIR[autoDir])
+      : oldToDir;
+    if (
+      newFromNode === oldFromNode &&
+      newToNode === oldToNode &&
+      finalFromDir === oldFromDir &&
+      finalToDir === oldToDir
+    ) {
+      return true;
+    }
+    // 变更已发生 → record 只入栈；两端子命令合成为一条，undo 逆序回退
+    edge.reattachEnd("from", newFromNode, finalFromDir);
+    edge.reattachEnd("to", newToNode, finalToDir);
+    const cmds: HistoryCommand[] = [];
+    if (
+      newFromNode !== oldFromNode ||
+      finalFromDir !== oldFromDir
+    ) {
+      cmds.push(
+        reconnectCommand(
+          edge,
+          "from",
+          oldFromNode,
+          oldFromDir,
+          newFromNode,
+          finalFromDir,
+        ),
+      );
+    }
+    if (newToNode !== oldToNode || finalToDir !== oldToDir) {
+      cmds.push(
+        reconnectCommand(edge, "to", oldToNode, oldToDir, newToNode, finalToDir),
+      );
+    }
+    this.history.record(
+      cmds.length === 1 ? cmds[0]! : compose("reconnect", ...cmds),
+    );
+    this.app.requestRender();
+    this.onChange?.("reconnect");
+    return true;
   }
 
   // 全选：全部形状进入多选组合态（整体移动/批量删除/批量替换可用）；多选组合
@@ -785,10 +902,12 @@ export class FlowChart {
     };
   }
 
-  // AI 生成：宿主适配器 → 操作序列 → 逐条执行。改图仍只有 render（语义图 →
-  // 程序布局 → 整图原子替换），模型绝不接触 x/y 与端口方向；undo/redo 直接驱动
-  // 既有历史链（与手动 Ctrl+Z 同源），history 只读历史并入回答，回答类指令只
-  // 返回文本、不改画布。提示词用 defaultAIFlowPrompt(req) 渲染即可。
+  // AI 生成：宿主适配器 → 操作序列 → 逐条执行。改图有两条路径：
+  // render（语义图 → 程序布局 → 整图原子替换）与 createNode（参考节点 + 方向 +
+  // 类型 → 复用端口手柄快速创建，纯增量、不动其他节点）。模型绝不接触 x/y 与
+  // 端口方向；undo/redo 直接驱动既有历史链（与手动 Ctrl+Z 同源），history 只读
+  // 历史并入回答，回答类指令只返回文本、不改画布。提示词用
+  // defaultAIFlowPrompt(req) 渲染即可。
   async generate(
     prompt: string,
     options: AIFlowRunOptions = {},
@@ -817,8 +936,16 @@ export class FlowChart {
     // 会让结果取决于执行顺序，且一次 Ctrl+Z 无法整体回退
     const hasControl = ops.some((o) => o.op === "undo" || o.op === "redo");
     const hasRender = ops.some((o) => o.op === "render");
+    const hasIncremental = ops.some(
+      (o) => o.op === "createNode" || o.op === "updateEdge",
+    );
     if (hasControl && hasRender) {
       throw new Error("AI 的 undo/redo 操作不能与改图操作混用，请分开执行");
+    }
+    // createNode / updateEdge 都以「当前画布」为基准，与整图重绘混用会让结果
+    // 取决于执行顺序（重绘会覆盖此前的增量变更），整体拒绝
+    if (hasIncremental && hasRender) {
+      throw new Error("AI 的增量操作（新建/换边）不能与整图重绘混用，请分开执行");
     }
 
     // 生成期间用户可能开始拖拽/编辑，执行前复查（与入口守卫对称）
@@ -861,9 +988,44 @@ export class FlowChart {
           label: `按语义图重绘（${op.graph.nodes.length} 个节点、${op.graph.edges.length} 条连线）`,
           status: "applied",
         });
+      } else if (op.op === "createNode") {
+        // 直接调用门面「参考节点 + 方向 + 类型」快速创建：与点击端口手柄同一路径，
+        // 已有节点几何、缩放/平移、激活态全部不受影响
+        const id = this.createNodeFrom(op.ref, op.dir, op.shape, op.text);
+        if (id) applied++;
+        const dirLabel: Record<PortDir, string> = {
+          top: "上方",
+          bottom: "下方",
+          left: "左侧",
+          right: "右侧",
+        };
+        steps.push({
+          op,
+          label: id
+            ? `在「${op.ref}」${dirLabel[op.dir]}新建节点「${op.text}」`
+            : `参考节点「${op.ref}」不存在或画布正忙，已跳过`,
+          status: id ? "applied" : "skipped",
+        });
+      } else if (op.op === "updateEdge") {
+        // 直接调用门面「更新一条边的首尾」：只重接这一条边，节点几何、
+        // 缩放/平移、选中态全部不受影响
+        const ok = this.updateEdge(op.ref, {
+          from: op.from,
+          fromDir: op.fromDir,
+          to: op.to,
+          toDir: op.toDir,
+        });
+        if (ok) applied++;
+        steps.push({
+          op,
+          label: ok
+            ? `更新「${op.ref.from} → ${op.ref.to}」这条连线的首尾`
+            : `未找到「${op.ref.from} → ${op.ref.to}」这条连线或画布正忙，已跳过`,
+          status: ok ? "applied" : "skipped",
+        });
       }
     }
-    // undo/redo 后语义图已变：重新导出，保证返回值与画布一致
+    // undo/redo / createNode 后语义图已变：重新导出，保证返回值与画布一致
     if (applied && !hasRender) resultGraph = toSemanticGraph(this.model.toJSON());
     return {
       graph: resultGraph,
@@ -875,8 +1037,11 @@ export class FlowChart {
   }
 
   // 语义图 → 画布数据：按能力键允许第三方布局器覆盖官方 DAG 分层布局。
-  // 默认不动视口（缩放/平移保持原样，AI 改图对用户是"原地生效"而非重开一张图）；
-  // 「把一张语义图渲染出来」的全新画布场景可显式传 { fit: true } 落定后适应视口。
+  // 几何部分合并：已有节点沿用当前坐标/尺寸/端口方向（仅套用形状/文字变更），
+  // 新增节点经锚点平移落进既有版式、新增连线按实际位置自动选边——无论改形状
+  // 还是增删节点，用户手动排好的版式都不会被程序分层布局整体打回。默认不动
+  // 视口（缩放/平移保持原样）；「把一张语义图渲染出来」的全新画布场景（无共有
+  // 节点可对位）可显式传 { fit: true } 落定后适应视口。
   renderAIGraph(
     graph: AIFlowGraph,
     options?: FlowLayoutOptions,
@@ -886,9 +1051,10 @@ export class FlowChart {
     const data = custom
       ? custom.layout(graph, options ?? {})
       : layoutFlowGraph(graph, options);
-    this.setData(data);
+    const merged = mergeFlowGeometry(this.model.toJSON(), data);
+    this.setData(merged);
     if (viewport?.fit) this.fit();
-    return data;
+    return merged;
   }
 
   // 整图替换（原子撤销）：先按数据建好新形状/连线实例（端口方向在创建时

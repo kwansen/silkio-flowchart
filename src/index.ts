@@ -65,6 +65,8 @@ export type {
   NormalizedFlowGraph,
   AIFlowOp,
   AIFlowRenderOp,
+  AIFlowCreateNodeOp,
+  AIFlowUpdateEdgeOp,
   AIFlowUndoOp,
   AIFlowRedoOp,
   AIFlowHistoryOp,

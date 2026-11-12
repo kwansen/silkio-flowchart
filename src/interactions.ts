@@ -1,10 +1,9 @@
 import { App, EdgePan } from "@silker/core";
 import type { HistoryCapability } from "@silker/core";
-import { compose } from "@silker/core";
 import { POINTER_CAPABILITY } from "@silker/core";
 import type { SelectionCapability } from "@silker/core";
 import type { TextEditorCapability } from "@silker/core";
-import { FlowEdge, OPPOSITE_DIR, PORT_STUB } from "./FlowEdge";
+import { FlowEdge, PORT_STUB } from "./FlowEdge";
 import type { PortDir } from "./FlowEdge";
 import { LinkPreview } from "./overlay";
 import { Shape } from "./Shape";
@@ -31,9 +30,9 @@ import {
   nudgeCommand,
   reconnectCommand,
   resizeCommand,
-  shapeData,
 } from "./commands";
-import { CLICK_CREATE_GAP, CLICK_MOVE_TOLERANCE } from "./session";
+import { createNodeInDirection } from "./quick-create";
+import { CLICK_MOVE_TOLERANCE } from "./session";
 import type { Session } from "./session";
 import { multiBounds, selEdge, selShape, selShapes } from "./selection";
 import type { FlowChangeType } from "./data";
@@ -617,49 +616,10 @@ export class FlowInteractions {
     }
   }
 
-  // 端口点击快速创建：沿端口方向新建与源节点同类型、同尺寸的节点并连线
-  //（边缘间距 CLICK_CREATE_GAP，垂直于方向的轴线与源节点中心对齐），
-  // 新节点进入选中态
+  // 端口点击快速创建：委托共享的 createNodeInDirection（参考节点 + 方向 +
+  // 类型），与门面/AI 程序化新建走同一条几何与原子命令路径，新节点进入选中态
   private createNodeInDirection(source: Shape, dir: PortDir) {
-    const shape = this.deps.model.createShape(source.kind, {
-      width: source.width,
-      height: source.height,
-    });
-    if (dir === "right") {
-      shape.x = source.x + source.width + CLICK_CREATE_GAP;
-      shape.y = source.y + (source.height - shape.height) / 2;
-    } else if (dir === "left") {
-      shape.x = source.x - CLICK_CREATE_GAP - shape.width;
-      shape.y = source.y + (source.height - shape.height) / 2;
-    } else if (dir === "bottom") {
-      shape.x = source.x + (source.width - shape.width) / 2;
-      shape.y = source.y + source.height + CLICK_CREATE_GAP;
-    } else {
-      shape.x = source.x + (source.width - shape.width) / 2;
-      shape.y = source.y - CLICK_CREATE_GAP - shape.height;
-    }
-    // 节点注册与连线创建组合为一条原子命令（不预先注册，避免 exec 重放时重复入列）：
-    // undo 逆序回退——先摘连线再摘节点，整体回到创建前；redo 顺序重建
-    const edge = new FlowEdge(source, shape, {
-      from: dir,
-      to: OPPOSITE_DIR[dir],
-    });
-    edge.router = this.deps.router;
-    this.deps.history.exec(
-      compose(
-        "add",
-        {
-          redo: () => this.deps.model.registerShape(shape),
-          undo: () => this.deps.model.removeShape(shape),
-          // 序列化载荷：内嵌形状数据快照，与 addNode 命令同构
-          toJSON: () => ({
-            kind: "flowchart.add-shape",
-            payload: { data: shapeData(shape) },
-          }),
-        },
-        this.deps.model.edgeAddRemove(edge),
-      ),
-    );
+    const shape = createNodeInDirection(this.deps, source, dir);
     this.select(shape);
     this.deps.onChange?.("add");
   }

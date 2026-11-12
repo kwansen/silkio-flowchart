@@ -1,5 +1,16 @@
-import type { BuiltinShapeKind, FlowData, ShapeKind } from "./data";
+import type {
+  BuiltinShapeKind,
+  FlowData,
+  FlowEdgeData,
+  FlowNodeData,
+  ShapeKind,
+} from "./data";
 import type { FlowLayoutOptions } from "./auto-layout";
+import type { PortDir } from "./FlowEdge";
+import { dominantPortDir, placeNodeInDirection } from "./geometry";
+
+// createNode 操作允许的四个相对方向（与端口手柄方向一一对应）
+const PORT_DIRS: readonly PortDir[] = ["top", "right", "bottom", "left"];
 
 // AI 生成领域协议：语义图（LLM 输出的协议）+ 请求/结果契约 + 输出规整纯函数。
 //
@@ -8,7 +19,9 @@ import type { FlowLayoutOptions } from "./auto-layout";
 // 确定性几何问题，不该交给 LLM：模型既算不准坐标，也算不准正交折线该从哪条边
 // 出入。因此本模块把两者拆开——
 //   1. LLM 只输出语义图 { nodes, edges }：节点文本/形状、边两端与分支标签；
-//   2. 程序用 layoutFlowGraph() 把语义图编译成 FlowData（算 x/y 与端口方向）。
+//   2. 程序用 layoutFlowGraph() 把语义图编译成 FlowData（算 x/y 与端口方向）；
+//      方向性的「在 X 旁边新建节点」则走 createNode 操作，直接复用端口手柄
+//      快速创建函数（参考节点 + 方向 + 类型），不触碰其他节点的几何。
 // 这样 AI 生成与 mindmap 的「树 → 自动布局」完全同构，只是布局器从树布局换成
 // DAG 分层布局。本模块不绑定任何具体 LLM SDK：宿主经 FlowChartOptions.ai 注入
 // 生成适配器（拿到上下文快照 → 调自家大模型 → 返回语义图或其 JSON 字符串）。
@@ -64,6 +77,29 @@ export interface AIFlowRenderOp {
   graph: AIFlowGraph;
 }
 
+// 在参考节点的指定方向新建节点并自动连边：直接复用端口手柄快速创建函数
+// （参考节点 + 方向 + 类型），不重排整张图、不动已有节点几何与视口。
+// ref 为节点 id（也容忍唯一文字匹配）；shape 省略时与参考节点同类型
+export interface AIFlowCreateNodeOp {
+  op: "createNode";
+  ref: string;
+  dir: PortDir;
+  shape?: BuiltinShapeKind;
+  text?: string;
+}
+
+// 更新一条边的首尾：ref 定位当前连线（两端节点 id + 可选分支标签），
+// from/to 为重接后的端点节点（省略保持），fromDir/toDir 为重接后的端口
+// 方向（省略按最终拓扑自动选边）。复用门面 updateEdge，不重排整张图
+export interface AIFlowUpdateEdgeOp {
+  op: "updateEdge";
+  ref: { from: string; to: string; text?: string };
+  from?: string;
+  to?: string;
+  fromDir?: PortDir;
+  toDir?: PortDir;
+}
+
 // 撤销最近一次变更：直接驱动既有历史链（与手动 Ctrl+Z 完全同源），可连用多次；
 // 不能与 render 混用（避免"先撤销再在同一批里改图"的时序歧义）
 export interface AIFlowUndoOp {
@@ -90,6 +126,8 @@ export interface AIFlowAnswerOp {
 
 export type AIFlowOp =
   | AIFlowRenderOp
+  | AIFlowCreateNodeOp
+  | AIFlowUpdateEdgeOp
   | AIFlowUndoOp
   | AIFlowRedoOp
   | AIFlowHistoryOp
@@ -229,6 +267,135 @@ export function toSemanticGraph(data: FlowData): AIFlowGraph {
   };
 }
 
+// 几何保留合并：把布局器算出的绝对数据（laid）与当前画布数据（current）按 id
+// 对位——已有节点沿用当前坐标/尺寸/端口方向，仅套用形状与文字变更（效果等同
+// 工具条 replaceSelected 的「原地改形状」）；新增节点复用端口手柄快速创建的同一
+// 份几何 placeNodeInDirection：由布局里的相对方位推断手柄方向，沿该方向在相邻
+// 已落位节点外侧以 CLICK_CREATE_GAP 落位（「在 a 下面加节点」= 点击 a 下方手柄），
+// 链式新增依次沿前序新节点继续落位。多父/孤立/会重叠等复杂拓扑退回锚点平移
+// （相邻共有节点位移均值，无则全局均值）。新增连线省略端口方向，由 FlowEdge
+// 按实际位置自动选边。用户手动排好的版式不再被程序分层布局整体打回。
+export function mergeFlowGeometry(current: FlowData, laid: FlowData): FlowData {
+  type Geom = { x: number; y: number; width: number; height: number };
+  const geomOf = (n: FlowNodeData): Geom => ({
+    x: n.x,
+    y: n.y,
+    width: n.width ?? 160,
+    height: n.height ?? 99,
+  });
+  const overlaps = (p: { x: number; y: number }, size: Geom, other: Geom) =>
+    p.x < other.x + other.width &&
+    p.x + size.width > other.x &&
+    p.y < other.y + other.height &&
+    p.y + size.height > other.y;
+
+  const curById = new Map<string, FlowNodeData>();
+  for (const n of current.nodes) if (n.id) curById.set(n.id, n);
+  const laidById = new Map<string, FlowNodeData>();
+  for (const n of laid.nodes) if (n.id) laidById.set(n.id, n);
+
+  // 已落位节点的几何与最终节点数据：初始为所有已有节点（当前几何）
+  const placed = new Map<string, Geom>();
+  const resultById = new Map<string, FlowNodeData>();
+  const deltaById = new Map<string, { dx: number; dy: number }>();
+  let sumDx = 0;
+  let sumDy = 0;
+  for (const n of laid.nodes) {
+    if (!n.id) continue;
+    const cur = curById.get(n.id);
+    if (!cur) continue;
+    const merged: FlowNodeData = {
+      ...cur,
+      shape: n.shape,
+      text: n.text,
+      width: cur.width ?? n.width,
+      height: cur.height ?? n.height,
+    };
+    resultById.set(n.id, merged);
+    placed.set(n.id, geomOf(merged));
+    const delta = { dx: cur.x - n.x, dy: cur.y - n.y };
+    deltaById.set(n.id, delta);
+    sumDx += delta.dx;
+    sumDy += delta.dy;
+  }
+  const count = deltaById.size;
+  const avgDx = count ? sumDx / count : 0;
+  const avgDy = count ? sumDy / count : 0;
+
+  // 语义图邻接表（无向）：找新增节点的相邻已落位节点
+  const neighbors = new Map<string, string[]>();
+  for (const e of laid.edges) {
+    for (const [a, b] of [
+      [e.from, e.to],
+      [e.to, e.from],
+    ] as const) {
+      const list = neighbors.get(a) ?? [];
+      list.push(b);
+      neighbors.set(a, list);
+    }
+  }
+  // 兜底锚点：相邻共有节点位移均值；无则全局均值（全新画布为 0）
+  const anchorDelta = (id: string): { dx: number; dy: number } => {
+    const deltas: { dx: number; dy: number }[] = [];
+    for (const nid of neighbors.get(id) ?? []) {
+      const d = deltaById.get(nid);
+      if (d) deltas.push(d);
+    }
+    if (!deltas.length) return { dx: avgDx, dy: avgDy };
+    return {
+      dx: deltas.reduce((s, d) => s + d.dx, 0) / deltas.length,
+      dy: deltas.reduce((s, d) => s + d.dy, 0) / deltas.length,
+    };
+  };
+
+  // 逐个落位新增节点：恰好一个已落位邻居时走手柄几何；否则锚点平移
+  for (const n of laid.nodes) {
+    if (!n.id || resultById.has(n.id)) continue;
+    const geom = geomOf(n);
+    const adjacent = (neighbors.get(n.id) ?? []).filter((id) => placed.has(id));
+    let pos: { x: number; y: number } | null = null;
+    // 全新画布（无任何共有节点）没有「保留既有版式」的前提，整图交给布局器，
+    // 不套用手柄间距覆盖布局器的层间距
+    if (deltaById.size > 0 && adjacent.length === 1) {
+      const src = adjacent[0]!;
+      const srcLaid = laidById.get(src);
+      if (srcLaid) {
+        const dir = dominantPortDir(geomOf(srcLaid), geom);
+        const candidate = placeNodeInDirection(placed.get(src)!, dir, geom);
+        // 与任何已落位节点重叠（多父汇聚/同父多子）时不用手柄几何，退回兜底
+        if (![...placed.values()].some((g) => overlaps(candidate, geom, g))) {
+          pos = candidate;
+        }
+      }
+    }
+    if (!pos) {
+      const { dx, dy } = anchorDelta(n.id);
+      pos = { x: n.x + dx, y: n.y + dy };
+    }
+    const merged: FlowNodeData = { ...n, x: Math.round(pos.x), y: Math.round(pos.y) };
+    resultById.set(n.id, merged);
+    placed.set(n.id, geomOf(merged));
+  }
+
+  // 连线按「两端 + 标签」建多重集索引：同对节点多条带标签分支边也能区分
+  const edgeKey = (e: { from: string; to: string; text?: string }) =>
+    `${e.from}\u0000${e.to}\u0000${e.text ?? ""}`;
+  const dirByKey = new Map<string, FlowEdgeData[]>();
+  for (const e of current.edges) {
+    const list = dirByKey.get(edgeKey(e)) ?? [];
+    list.push(e);
+    dirByKey.set(edgeKey(e), list);
+  }
+  return {
+    nodes: laid.nodes.map((n) => resultById.get(n.id ?? "") ?? n),
+    edges: laid.edges.map((e) => {
+      // 既有连线沿用冻结的端口方向；新连线省略方向，由 FlowEdge 按实际位置选边
+      const cur = dirByKey.get(edgeKey(e))?.shift();
+      return cur ? { ...e, fromDir: cur.fromDir, toDir: cur.toDir } : e;
+    }),
+  };
+}
+
 // ---- 输出规整 ----
 
 // 校验并规整 LLM 返回的语义图：补齐/去重 id、推断形状、丢弃悬空边、去重重复边。
@@ -315,6 +482,62 @@ export function normalizeAIFlowOps(raw: unknown): AIFlowOp[] {
       const source = op.graph ?? (Array.isArray(op.nodes) ? op : undefined);
       if (!source) throw new Error(`AI render 操作缺少 graph${no}`);
       return { op: "render", graph: normalizeAIFlowGraph(source) };
+    }
+    if (op?.op === "createNode") {
+      const ref = typeof op.ref === "string" ? op.ref.trim() : "";
+      const dir = typeof op.dir === "string" ? op.dir.toLowerCase() : "";
+      if (!ref) throw new Error(`AI createNode 操作缺少 ref${no}`);
+      if (!PORT_DIRS.includes(dir as PortDir)) {
+        throw new Error(`AI createNode 操作的 dir 非法${no}: ${dir}`);
+      }
+      // 文字可为空（画布允许无文字节点）；非字符串视为脏字段
+      if (op.text !== undefined && typeof op.text !== "string") {
+        throw new Error(`AI createNode 操作的 text 不是字符串${no}`);
+      }
+      const text = typeof op.text === "string" ? op.text.trim() : "";
+      // shape 省略 → 门面默认与参考节点同类型；给出时经内置形状推断收敛
+      const shape =
+        op.shape === undefined
+          ? undefined
+          : inferFlowShape({ shape: op.shape, role: op.role, text });
+      return {
+        op: "createNode",
+        ref,
+        dir: dir as PortDir,
+        ...(shape ? { shape } : {}),
+        text,
+      };
+    }
+    if (op?.op === "updateEdge") {
+      const r = op.ref as Record<string, unknown> | null;
+      const str = (v: unknown): string | undefined =>
+        typeof v === "string" && v.trim() ? v.trim() : undefined;
+      const refFrom = str(r?.from);
+      const refTo = str(r?.to);
+      if (!refFrom || !refTo) {
+        throw new Error(`AI updateEdge 操作缺少 ref.from / ref.to${no}`);
+      }
+      const dirOf = (v: unknown, field: string): PortDir | undefined => {
+        if (v === undefined) return undefined;
+        const d = typeof v === "string" ? v.toLowerCase() : "";
+        if (!PORT_DIRS.includes(d as PortDir)) {
+          throw new Error(`AI updateEdge 操作的 ${field} 非法${no}: ${String(v)}`);
+        }
+        return d as PortDir;
+      };
+      const refText = str(r?.text);
+      const nextFrom = str(op.from);
+      const nextTo = str(op.to);
+      const nextFromDir = dirOf(op.fromDir, "fromDir");
+      const nextToDir = dirOf(op.toDir, "toDir");
+      return {
+        op: "updateEdge",
+        ref: { from: refFrom, to: refTo, ...(refText ? { text: refText } : {}) },
+        ...(nextFrom ? { from: nextFrom } : {}),
+        ...(nextTo ? { to: nextTo } : {}),
+        ...(nextFromDir ? { fromDir: nextFromDir } : {}),
+        ...(nextToDir ? { toDir: nextToDir } : {}),
+      };
     }
     throw new Error(`AI 返回了未知操作类型${no}: ${String(op?.op)}`);
   });
@@ -415,7 +638,17 @@ export function defaultAIFlowPrompt(req: AIFlowEditRequest): string {
     '2. 撤销 / 重做：{"ops":[{"op":"undo"}]} 或 {"ops":[{"op":"redo"}]}；可连写多次表示连续撤销/重做，但不能与改图操作写在同一批。',
     '3. 查看历史：{"ops":[{"op":"history"}]}（只读，程序会把可撤销/可重做的变更列表并入回答）。',
     '4. 回答提问：{"ops":[{"op":"answer","text":"回答文本"}]} 或 {"answer":"回答文本"} 或纯文本。',
-    "字段说明：",
+    '5. 在指定节点旁新建：{"ops":[{"op":"createNode","ref":"n2","dir":"bottom","shape":"rect","text":"新步骤"}]}；可连写多条。',
+    '6. 修改某条连线的首尾：{"ops":[{"op":"updateEdge","ref":{"from":"a","to":"b"},"fromDir":"right","toDir":"left"}]}；可连写多条。',
+    "字段说明（updateEdge）：",
+    "- ref：定位当前连线，from/to 为这条边现在的起点与终点节点 id；同对节点有多条分支边时加 text 填分支标签。",
+    "- fromDir / toDir：重接后的出入端口，只能是 top / bottom / left / right（如「从 a 的右边出、进 b 的左边」填 right / left）；省略时程序按节点相对位置自动选边。",
+    "- from / to：把该端重接到别的节点（填节点 id 或唯一文字）；省略表示端点节点不变，只改方向。",
+    "字段说明（createNode）：",
+    "- ref：参考节点的 id，取下方「当前流程图」里的 nodes[].id；也可用该节点唯一文字。",
+    "- dir：新节点相对参考节点的方向，只能是 top / bottom / left / right（上 / 下 / 左 / 右）。",
+    "- shape：新节点形状，取值同 nodes[].shape；省略时与参考节点同类型。text 为节点文字，可为空字符串。",
+    "字段说明（render）：",
     "- nodes[].id：节点唯一标识，字符串；新节点可以给新 id 或省略（程序自动补全）。",
     "- nodes[].shape：只允许 rect（步骤）、diamond（判断）、ellipse（开始/结束）、parallelogram（输入/输出）、hexagon（准备）、database（存储）。也可以用 role 字段代替（start/end/decision/io/process/data），程序会自动推断形状。",
     "- nodes[].text：节点文字，简短；判断节点写成问句。允许 text 为空字符串（画布上存在无文字的节点，原样保留即可，不要替它虚构文字）。",
@@ -425,6 +658,8 @@ export function defaultAIFlowPrompt(req: AIFlowEditRequest): string {
     "- 有且仅有一个开始节点；判断节点的每条出边都要写分支标签；流程要能走到结束节点。",
     "- 循环/回退用一条指回已有节点的边表示，不要复制出重复节点；不要出现没有连线的孤立节点。",
     "- 修改现有流程图时，保留未改动节点的 id 与文字，只增删需要变化的节点和边，输出完整的最终图（不是补丁）。",
+    "- 用户说「在 X 下面 / 上面 / 左边 / 右边新建节点」「给某个节点加一个分支节点」时，用 createNode 操作（方向按用户说的映射到 dir），不要重新输出整张图；这类操作不会改动其他节点的位置与整图结构。createNode 不能与 render 写在同一批。",
+    "- 用户说「把 a→b 改成从右边出、左边进」「某条边改连到 c」「调整连线的出入方向」时，用 updateEdge 操作，不要重新输出整张图；它只改这一条边的首尾，不动任何节点位置。updateEdge 不能与 render 写在同一批。",
     "对话规则：",
     "- 用户问「选中了什么」「这个节点是什么」时，只依据下方「当前选中」回答，不要改图；当前选中为空就直说没有选中任何节点或连线，不要编造。",
     "- 用户说「撤销」「重做」时输出对应的 undo / redo 操作，不要试图通过重新生成整张图来模拟；下方「历史状态」为 0 条时应如实说明没有可撤销/可重做的变更。",

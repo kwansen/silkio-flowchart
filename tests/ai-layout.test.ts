@@ -4,10 +4,12 @@ import {
   inferFlowShape,
   normalizeAIFlowGraph,
   parseAIFlowResponse,
+  mergeFlowGeometry,
   toSemanticGraph,
 } from "../src/ai-protocol";
 import { layoutFlowGraph } from "../src/auto-layout";
 import type { FlowData } from "../src/data";
+import { placeNodeInDirection } from "../src/geometry";
 
 const reviewGraph = {
   nodes: [
@@ -74,6 +76,112 @@ describe("AI 语义图协议", () => {
     expect(g.edges).toHaveLength(1);
     expect(g.edges[0]?.to).toBe(g.nodes[2]?.id);
     expect(g.nodes.every((n) => typeof n.shape === "string")).toBe(true);
+  });
+
+  it("几何部分合并：已有节点沿用几何，新增节点复用端口手柄快速创建几何", () => {
+    // 手动排的「左右」版式（AI 布局器会重排成上下分层）
+    const current: FlowData = {
+      nodes: [
+        { id: "a", shape: "rect", x: 60, y: 220, width: 160, height: 99, text: "处理" },
+        { id: "b", shape: "rect", x: 400, y: 220, width: 160, height: 99, text: "校验" },
+      ],
+      edges: [{ from: "a", to: "b", fromDir: "right", toDir: "left" }],
+    };
+    // 布局器输出：TB 分层（a 上、b 下），且 b 改为菱形、文字更新
+    const laid: FlowData = {
+      nodes: [
+        { id: "a", shape: "rect", x: 80, y: 80, width: 160, height: 99, text: "处理" },
+        { id: "b", shape: "diamond", x: 80, y: 279, width: 160, height: 99, text: "校验通过？" },
+      ],
+      edges: [{ from: "a", to: "b", fromDir: "bottom", toDir: "top" }],
+    };
+    // 拓扑不变（改 b 的形状+文字）：保留当前 x/y/尺寸与连线方向，仅套用语义变更
+    const merged = mergeFlowGeometry(current, laid);
+    expect(merged.nodes).toEqual([
+      { id: "a", shape: "rect", x: 60, y: 220, width: 160, height: 99, text: "处理" },
+      { id: "b", shape: "diamond", x: 400, y: 220, width: 160, height: 99, text: "校验通过？" },
+    ]);
+    expect(merged.edges).toEqual(current.edges);
+
+    // 拓扑有变（在 b 下新增节点 c，b→c 连线）：既有节点几何不动；新增节点
+    // 复用与「点击 b 下方手柄」完全相同的几何（CLICK_CREATE_GAP = 80）
+    const added = mergeFlowGeometry(current, {
+      nodes: [
+        ...laid.nodes,
+        { id: "c", shape: "rect", x: 80, y: 478, width: 160, height: 99, text: "新步骤" },
+      ],
+      edges: [...laid.edges, { from: "b", to: "c" }],
+    });
+    expect(added.nodes.map((n) => n.id)).toEqual(["a", "b", "c"]);
+    expect(added.nodes[2]).toMatchObject({
+      id: "c",
+      ...placeNodeInDirection(
+        { x: 400, y: 220, width: 160, height: 99 },
+        "bottom",
+        { width: 160, height: 99 },
+      ),
+    });
+    expect(added.nodes[0]).toMatchObject({ x: 60, y: 220 });
+    expect(added.nodes[1]).toMatchObject({ x: 400, y: 220, shape: "diamond" });
+    // 既有连线沿用冻结方向；新增连线（b → c）省略端口方向，由 FlowEdge 自动选边
+    expect(added.edges[0]).toEqual(current.edges[0]);
+    expect(added.edges[1]).toEqual({ from: "b", to: "c" });
+
+    // 孤立新增节点（无任何连线）：退回全局平均位移
+    // = a:(-20, +140) 与 b:(+320, -59) 的平均 = (+150, +40.5) → c 落在 (230, 519)
+    const isolated = mergeFlowGeometry(current, {
+      nodes: [
+        ...laid.nodes,
+        { id: "c", shape: "rect", x: 80, y: 478, width: 160, height: 99, text: "便签" },
+      ],
+      edges: laid.edges,
+    });
+    expect(isolated.nodes[2]).toMatchObject({ id: "c", x: 230, y: 519 });
+
+    // 链式新增（b→c→d）：d 以刚落位的 c 为锚，继续沿手柄方向排布
+    const chain = mergeFlowGeometry(current, {
+      nodes: [
+        ...laid.nodes,
+        { id: "c", shape: "rect", x: 80, y: 478, width: 160, height: 99, text: "新步骤" },
+        { id: "d", shape: "rect", x: 80, y: 677, width: 160, height: 99, text: "再一步" },
+      ],
+      edges: [...laid.edges, { from: "b", to: "c" }, { from: "c", to: "d" }],
+    });
+    expect(chain.nodes[3]).toMatchObject({
+      id: "d",
+      ...placeNodeInDirection(
+        { x: chain.nodes[2]!.x, y: chain.nodes[2]!.y, width: 160, height: 99 },
+        "bottom",
+        { width: 160, height: 99 },
+      ),
+    });
+
+    // 同父两个新增节点会重叠时：第二个退回锚点平移，不与第一个压在一起
+    const siblings = mergeFlowGeometry(current, {
+      nodes: [
+        ...laid.nodes,
+        { id: "c", shape: "rect", x: 80, y: 478, width: 160, height: 99, text: "分支一" },
+        { id: "d", shape: "rect", x: 80, y: 478, width: 160, height: 99, text: "分支二" },
+      ],
+      edges: [...laid.edges, { from: "b", to: "c" }, { from: "b", to: "d" }],
+    });
+    expect(siblings.nodes[3]!.y).not.toBe(siblings.nodes[2]!.y);
+
+    // 删除节点（b 不在语义图中）：被移除，其余几何保留
+    const removed = mergeFlowGeometry(
+      current,
+      laid.nodes.length
+        ? { nodes: [laid.nodes[0]!], edges: [] }
+        : { nodes: [], edges: [] },
+    );
+    expect(removed.nodes).toHaveLength(1);
+    expect(removed.nodes[0]).toMatchObject({ id: "a", x: 60, y: 220 });
+    expect(removed.edges).toEqual([]);
+
+    // 全新画布（无共有节点）：无锚点平移，布局结果原样落地
+    const fresh = mergeFlowGeometry({ nodes: [], edges: [] }, laid);
+    expect(fresh.nodes).toEqual(laid.nodes);
+    expect(fresh.edges).toEqual(laid.edges);
   });
 
   it("形状推断与当前图 → 语义图（剥离全部几何字段）", () => {

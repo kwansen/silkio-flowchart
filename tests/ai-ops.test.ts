@@ -62,6 +62,52 @@ describe("AI 操作协议", () => {
     expect(() => parseAIFlowOps('{"foo":1}')).toThrow(/缺少 graph 或 answer/);
   });
 
+  it("createNode：参考节点 + 方向 + 类型 + 文字，可连写多条", () => {
+    const { ops } = parseAIFlowOps(
+      '{"ops":[{"op":"createNode","ref":"n2","dir":"BOTTOM","shape":"diamond","text":" 新步骤 "},{"op":"createNode","ref":"n2","dir":"right","text":""}]}',
+    );
+    expect(ops).toEqual([
+      { op: "createNode", ref: "n2", dir: "bottom", shape: "diamond", text: "新步骤" },
+      { op: "createNode", ref: "n2", dir: "right", text: "" },
+    ]);
+    // 单操作对象（模型常省略外层数组）也能识别
+    expect(
+      parseAIFlowOps('{"op":"createNode","ref":"n2","dir":"left","shape":"unknown","text":"校验？"}')
+        .ops[0],
+    ).toEqual({ op: "createNode", ref: "n2", dir: "left", shape: "diamond", text: "校验？" });
+  });
+
+  it("updateEdge：定位边 + 更新首尾端口/端点，可连写多条", () => {
+    const { ops } = parseAIFlowOps(
+      '{"ops":[{"op":"updateEdge","ref":{"from":"a","to":"b"},"fromDir":"RIGHT","toDir":"left"},{"op":"updateEdge","ref":{"from":"a","to":"b","text":"是"},"to":"c"}]}',
+    );
+    expect(ops).toEqual([
+      { op: "updateEdge", ref: { from: "a", to: "b" }, fromDir: "right", toDir: "left" },
+      { op: "updateEdge", ref: { from: "a", to: "b", text: "是" }, to: "c" },
+    ]);
+  });
+
+  it("updateEdge 非法字段整体拒绝：缺 ref / 方向非法", () => {
+    expect(() => normalizeAIFlowOps([{ op: "updateEdge", ref: { from: "a" } }])).toThrow(
+      /缺少 ref.from/,
+    );
+    expect(() =>
+      normalizeAIFlowOps([
+        { op: "updateEdge", ref: { from: "a", to: "b" }, fromDir: "below" },
+      ]),
+    ).toThrow(/fromDir 非法/);
+  });
+
+  it("createNode 非法字段整体拒绝：缺 ref / dir 非法 / text 非字符串", () => {
+    expect(() => normalizeAIFlowOps([{ op: "createNode", dir: "bottom" }])).toThrow(/缺少 ref/);
+    expect(() =>
+      normalizeAIFlowOps([{ op: "createNode", ref: "a", dir: "below" }]),
+    ).toThrow(/dir 非法/);
+    expect(() =>
+      normalizeAIFlowOps([{ op: "createNode", ref: "a", dir: "top", text: 42 }]),
+    ).toThrow(/text 不是字符串/);
+  });
+
   it("兼容入口 parseAIFlowResponse 仍按最后一条 render 取图", () => {
     const raw = `{"ops":[{"op":"history"},{"op":"render","graph":${JSON.stringify(graph)}}]}`;
     expect(parseAIFlowResponse(raw).graph?.nodes).toHaveLength(2);
@@ -86,6 +132,29 @@ describe("AI 提示词上下文", () => {
     expect(prompt).toContain('"text":"处理"');
     expect(prompt).toContain('"op":"undo"');
     expect(prompt).toContain('"op":"history"');
+  });
+
+  it("提示词要求方向性新建走 createNode，禁止与 render 混用", () => {
+    const prompt = defaultAIFlowPrompt({
+      ...base,
+      prompt: "在选中的节点下面新建一个菱形",
+      selection: { nodes: [{ id: "a", shape: "rect", text: "处理" }], edges: [] },
+      historyState: { canUndo: false, canRedo: false, undoCount: 0, redoCount: 0 },
+    });
+    expect(prompt).toContain('"op":"createNode"');
+    expect(prompt).toContain("top / bottom / left / right");
+    expect(prompt).toContain("不能与 render 写在同一批");
+  });
+
+  it("提示词要求换边走 updateEdge，禁止与整图重绘混用", () => {
+    const prompt = defaultAIFlowPrompt({
+      ...base,
+      prompt: "把 a 到 b 的连线改成从右边出、左边进",
+      selection: { nodes: [], edges: [] },
+      historyState: { canUndo: false, canRedo: false, undoCount: 0, redoCount: 0 },
+    });
+    expect(prompt).toContain('"op":"updateEdge"');
+    expect(prompt).toContain("只改这一条边的首尾");
   });
 
   it("无选中时明确告知为空，避免模型编造选中节点", () => {

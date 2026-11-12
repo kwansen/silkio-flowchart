@@ -7,6 +7,7 @@ import { Shape } from "./Shape";
 import { OPPOSITE_DIR, PORT_DIR_VEC } from "./FlowEdge";
 import type { FlowEdge, PortDir } from "./FlowEdge";
 import type { Bounds } from "./snap";
+import { CLICK_CREATE_GAP } from "./session";
 
 // 端口命中半径（世界坐标）：也用作缩放边线对四边中点的避让宽度
 export const PORT_HIT_RADIUS = 10;
@@ -352,4 +353,52 @@ export function applyGroupResize(
     g.shape.height = g.height * sy;
     g.shape.layout();
   }
+}
+
+// ---- 端口方向快速创建的共享几何 ----
+//
+// 端口手柄点击新建节点（interactions.createNodeInDirection）与 AI 语义图新增节点
+// 落位（ai-protocol.mergeFlowGeometry）共用同一份口径，避免两套几何各自实现。
+
+// 沿 dir 在源节点外侧放置新节点：边缘间距 CLICK_CREATE_GAP，垂直于方向的
+// 轴线与源节点中心对齐。交互入口传入在位 Shape，程序化入口传入数据快照即可。
+export function placeNodeInDirection(
+  source: { x: number; y: number; width: number; height: number },
+  dir: PortDir,
+  size: { width: number; height: number },
+): { x: number; y: number } {
+  if (dir === "right") {
+    return {
+      x: source.x + source.width + CLICK_CREATE_GAP,
+      y: source.y + (source.height - size.height) / 2,
+    };
+  }
+  if (dir === "left") {
+    return {
+      x: source.x - CLICK_CREATE_GAP - size.width,
+      y: source.y + (source.height - size.height) / 2,
+    };
+  }
+  if (dir === "bottom") {
+    return {
+      x: source.x + (source.width - size.width) / 2,
+      y: source.y + source.height + CLICK_CREATE_GAP,
+    };
+  }
+  return {
+    x: source.x + (source.width - size.width) / 2,
+    y: source.y - CLICK_CREATE_GAP - size.height,
+  };
+}
+
+// 由两节点中心的主导方向推断端口方向（与 FlowEdge 构造时 hints 缺省的选边口径一致）：
+// 语义图不含方向信息，程序据此把「布局里在谁下方/右侧」翻译成手柄方向
+export function dominantPortDir(
+  from: { x: number; y: number; width: number; height: number },
+  to: { x: number; y: number; width: number; height: number },
+): PortDir {
+  const dx = to.x + to.width / 2 - (from.x + from.width / 2);
+  const dy = to.y + to.height / 2 - (from.y + from.height / 2);
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? "right" : "left";
+  return dy >= 0 ? "bottom" : "top";
 }
