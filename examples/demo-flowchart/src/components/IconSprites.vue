@@ -93,20 +93,32 @@
       <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none" />
     </symbol>
 
-    <!-- 形状预览：添加节点 / 替换形状菜单共用 -->
-    <symbol id="s-rect" viewBox="0 0 40 24"><rect x="4" y="5" width="32" height="14" rx="2" /></symbol>
-    <symbol id="s-diamond" viewBox="0 0 40 24"><path d="M20 3 36 12 20 21 4 12Z" /></symbol>
-    <symbol id="s-ellipse" viewBox="0 0 40 24"><ellipse cx="20" cy="12" rx="16" ry="8" /></symbol>
-    <symbol id="s-parallelogram" viewBox="0 0 40 24"><path d="M10 5h28l-8 14H2z" /></symbol>
-    <symbol id="s-hexagon" viewBox="0 0 40 24"><path d="M10 5h20l7 7-7 7H10l-7-7z" /></symbol>
-    <symbol id="s-database" viewBox="0 0 40 24">
-      <ellipse cx="20" cy="6" rx="13" ry="3.5" />
-      <path d="M7 6v12c0 2 6 3.5 13 3.5s13-1.5 13-3.5V6" />
-      <path d="M7 12c0 2 6 3.5 13 3.5S33 14 33 12" />
+    <!-- 形状预览：添加节点 / 替换形状菜单共用。
+         按节点真实默认尺寸 160×99（radius 8、斜切 30%/15% 等几何参数）等比绘制，
+         与画布上的实际形状保持同一长宽比例与轮廓；描边用 non-scaling-stroke 锁定 1px -->
+    <symbol id="s-rect" viewBox="0 0 160 99">
+      <rect x="3" y="3" width="154" height="93" rx="8" vector-effect="non-scaling-stroke" />
     </symbol>
-    <symbol id="s-note" viewBox="0 0 40 24">
-      <path d="M4 5h25l7 7v7H4z" />
-      <path d="M29 5v7h7" />
+    <symbol id="s-diamond" viewBox="0 0 160 99">
+      <path d="M80 3 157 49.5 80 96 3 49.5Z" vector-effect="non-scaling-stroke" />
+    </symbol>
+    <symbol id="s-ellipse" viewBox="0 0 160 99">
+      <ellipse cx="80" cy="49.5" rx="77" ry="46.5" vector-effect="non-scaling-stroke" />
+    </symbol>
+    <symbol id="s-parallelogram" viewBox="0 0 160 99">
+      <path d="M31 3h126l-28 93H3z" vector-effect="non-scaling-stroke" />
+    </symbol>
+    <symbol id="s-hexagon" viewBox="0 0 160 99">
+      <path d="M26 3h105l26 46.5-26 46.5H26L3 49.5z" vector-effect="non-scaling-stroke" />
+    </symbol>
+    <symbol id="s-database" viewBox="0 0 160 99">
+      <ellipse cx="80" cy="17" rx="77" ry="14" vector-effect="non-scaling-stroke" />
+      <path d="M3 17v62c0 7.7 34.5 14 77 14s77-6.3 77-14V17" vector-effect="non-scaling-stroke" />
+      <path d="M3 48.5c0 7.7 34.5 14 77 14s77-6.3 77-14" vector-effect="non-scaling-stroke" />
+    </symbol>
+    <symbol id="s-note" viewBox="0 0 160 99">
+      <path d="M3 3h137l17 17v76H3z" vector-effect="non-scaling-stroke" />
+      <path d="M140 3v17h17" vector-effect="non-scaling-stroke" />
     </symbol>
   </svg>
 </template>

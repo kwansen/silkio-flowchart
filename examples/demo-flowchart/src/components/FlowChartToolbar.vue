@@ -81,6 +81,11 @@ const btnClass =
   "flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-gray-800 hover:bg-gray-100 disabled:cursor-not-allowed disabled:text-gray-300";
 const menuClass =
   "absolute top-[calc(100%+10px)] right-0 z-20 flex flex-col gap-0.5 rounded-[10px] bg-white p-1 shadow-[0_4px_16px_rgba(0,0,0,0.12)] before:absolute before:-top-2.5 before:right-0 before:left-0 before:h-2.5 before:content-['']";
+// 形状菜单：大图标网格（每行 4 个自动换行），无文字标签，悬停/原始 tooltip 提示名称
+const shapesMenuClass =
+  "absolute top-[calc(100%+10px)] right-0 z-20 flex flex-row flex-wrap w-60 gap-0.5 rounded-[10px] bg-white p-1 shadow-[0_4px_16px_rgba(0,0,0,0.12)] before:absolute before:-top-2.5 before:right-0 before:left-0 before:h-2.5 before:content-['']";
+const shapeItemClass =
+  "flex h-14 w-14 cursor-pointer items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-violet-500";
 const menuItemClass =
   "flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs whitespace-nowrap text-gray-700 hover:bg-gray-100";
 </script>
@@ -117,18 +122,17 @@ const menuItemClass =
       <button :class="btnClass" title="添加节点" aria-label="添加节点" @click="toggleMenu('add')">
         <Icon name="i-plus-box" />
       </button>
-      <div v-show="openMenu === 'add'" id="add-menu" :class="menuClass" class="min-w-43">
-        <div class="px-2.5 pt-1 pb-0.5 text-[10px] text-gray-400 select-none">添加节点</div>
+      <div v-show="openMenu === 'add'" id="add-menu" :class="shapesMenuClass">
         <button
           v-for="opt in shapeOptions"
           :key="opt.kind"
           type="button"
-          :class="menuItemClass"
-          class="group"
+          :class="shapeItemClass"
+          :title="opt.label"
+          :aria-label="opt.label"
           @click="pickAdd(opt)"
         >
-          <Icon :name="opt.symbol" size="h-[18px] w-7" class="text-gray-400 group-hover:text-violet-500" />
-          <span>{{ opt.label }}</span>
+          <Icon :name="opt.symbol" size="w-10 h-6" stroke="stroke-[1]" />
         </button>
       </div>
     </div>
@@ -143,18 +147,17 @@ const menuItemClass =
       >
         <Icon name="i-swap" />
       </button>
-      <div v-show="openMenu === 'replace'" id="replace-menu" :class="menuClass" class="min-w-43">
-        <div class="px-2.5 pt-1 pb-0.5 text-[10px] text-gray-400 select-none">替换选中形状</div>
+      <div v-show="openMenu === 'replace'" id="replace-menu" :class="shapesMenuClass">
         <button
           v-for="opt in shapeOptions"
           :key="opt.kind"
           type="button"
-          :class="menuItemClass"
-          class="group"
+          :class="shapeItemClass"
+          :title="opt.label"
+          :aria-label="opt.label"
           @click="pickReplace(opt)"
         >
-          <Icon :name="opt.symbol" size="h-[18px] w-7" class="text-gray-400 group-hover:text-violet-500" />
-          <span>{{ opt.label }}</span>
+          <Icon :name="opt.symbol" size="w-10 h-6" stroke="stroke-[1]" />
         </button>
       </div>
     </div>
