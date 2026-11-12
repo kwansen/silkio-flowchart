@@ -20,9 +20,6 @@ const emit = defineEmits<{
   redo: [];
   "add-shape": [kind: ShapeKind, text: string];
   "replace-shape": [kind: ShapeKind];
-  copy: [];
-  paste: [];
-  remove: [];
   fit: [];
   "copy-json": [];
   "export-json": [];
@@ -161,15 +158,6 @@ const menuItemClass =
       </div>
     </div>
 
-    <button id="copy-btn" :class="btnClass" title="复制选中" aria-label="复制选中" @click="emit('copy')">
-      <Icon name="i-copy" />
-    </button>
-    <button id="paste-btn" :class="btnClass" title="粘贴" aria-label="粘贴" @click="emit('paste')">
-      <Icon name="i-paste" />
-    </button>
-    <button id="delete-btn" :class="btnClass" title="删除选中" aria-label="删除选中" @click="emit('remove')">
-      <Icon name="i-trash" />
-    </button>
     <button id="fit-btn" :class="btnClass" title="适应视图" aria-label="适应视图" @click="emit('fit')">
       <Icon name="i-fit" />
     </button>

@@ -278,15 +278,6 @@ function addShape(kind: ShapeKind, text: string) {
 function replaceShape(kind: ShapeKind) {
   flowchart?.replaceSelected(kind);
 }
-function copySelected() {
-  flowchart?.copySelected();
-}
-function paste() {
-  flowchart?.paste();
-}
-function removeSelected() {
-  flowchart?.deleteSelected();
-}
 function fit() {
   flowchart?.fit();
 }
@@ -409,9 +400,6 @@ onUnmounted(() => {
         @redo="redo"
         @add-shape="addShape"
         @replace-shape="replaceShape"
-        @copy="copySelected"
-        @paste="paste"
-        @remove="removeSelected"
         @fit="fit"
         @copy-json="copyJson"
         @export-json="exportJson"
