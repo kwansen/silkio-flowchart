@@ -1,8 +1,8 @@
 <script setup lang="ts">
-// 文档切换器：标题按钮（打开列表）、新建按钮，以及
-// 文档列表 dialog（排序 / 重命名 / 打开 / 删除）。画布 onChange 自动保存，
+// 文档切换器：标题按钮（打开列表）、原位重命名、新建按钮，以及
+// 文档列表 dialog（排序 / 打开 / 删除）。画布 onChange 自动保存，
 // 无需保存按钮与保存状态提示；状态与持久化由宿主组件负责。
-import { computed, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { DEFAULT_DOC_NAME, type FlowChartDoc } from "../lib/idb";
 import Icon from "./Icon.vue";
 
@@ -48,12 +48,57 @@ function createDoc() {
   emit("create");
 }
 
-function onRename(event: Event) {
-  emit("rename", (event.target as HTMLInputElement).value);
+// ---- 标题原位重命名：点击铅笔图标后标题文本替换为输入框，失焦/回车提交 ----
+const editingName = ref(false);
+const draftName = ref("");
+const nameInput = ref<HTMLInputElement | null>(null);
+// blur 与编辑图标点击会先后触发提交，用守卫避免重复 emit / 重新进入编辑
+let commitGuard = false;
+let clickGuard = false;
+
+watch(
+  () => props.docName,
+  () => {
+    // 切换文档等外部改名时退出编辑态
+    editingName.value = false;
+  },
+);
+
+function startRename() {
+  draftName.value = props.docName;
+  commitGuard = false;
+  editingName.value = true;
+  void nextTick(() => {
+    nameInput.value?.focus();
+    nameInput.value?.select();
+  });
 }
 
-function onRenameEnter(event: KeyboardEvent) {
-  (event.target as HTMLInputElement).blur();
+function commitRename() {
+  if (commitGuard) return;
+  commitGuard = true;
+  editingName.value = false;
+  emit("rename", draftName.value.trim() || DEFAULT_DOC_NAME);
+}
+
+function cancelRename() {
+  commitGuard = true;
+  editingName.value = false;
+}
+
+// 编辑态点击铅笔图标 = 提交退出；blur 先于 click 触发，用 pointerdown 抢先处理
+function onEditPointerDown() {
+  if (!editingName.value) return;
+  clickGuard = true;
+  commitRename();
+}
+
+function onEditClick() {
+  if (clickGuard) {
+    clickGuard = false;
+    return;
+  }
+  startRename();
 }
 
 function formatTime(ts: number) {
@@ -70,7 +115,22 @@ function formatTime(ts: number) {
   <div
     class="absolute top-4 left-4 z-10 flex items-center gap-0.5 rounded-[10px] bg-white p-1 shadow-[0_2px_8px_rgba(0,0,0,0.1)]"
   >
+    <!-- 编辑态：标题 div 原位替换为输入框，失焦/回车提交，Esc 取消 -->
+    <div v-if="editingName" class="flex h-8 items-center rounded-md px-2">
+      <input
+        id="doc-name-input"
+        ref="nameInput"
+        class="h-6 w-40 rounded-md border border-violet-300 px-1.5 text-xs text-gray-800 outline-none focus:border-violet-400"
+        type="text"
+        v-model="draftName"
+        :placeholder="DEFAULT_DOC_NAME"
+        @blur="commitRename"
+        @keydown.enter.prevent="commitRename"
+        @keydown.esc="cancelRename"
+      />
+    </div>
     <button
+      v-else
       id="docs-btn"
       class="flex h-8 cursor-pointer items-center gap-1.5 rounded-md px-2 hover:bg-gray-100"
       title="流程图列表"
@@ -82,6 +142,17 @@ function formatTime(ts: number) {
         {{ docName || DEFAULT_DOC_NAME }}
       </span>
       <Icon name="i-chevron-down" size="h-3 w-3" class="text-gray-400" />
+    </button>
+    <button
+      id="rename-btn"
+      class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-gray-800 hover:bg-gray-100"
+      :class="{ 'text-violet-500': editingName }"
+      title="重命名"
+      aria-label="重命名"
+      @pointerdown="onEditPointerDown"
+      @click="onEditClick"
+    >
+      <Icon name="i-pen" />
     </button>
     <button
       id="new-doc-btn"
@@ -118,20 +189,6 @@ function formatTime(ts: number) {
             <Icon name="i-close" size="h-3.5 w-3.5" />
           </button>
         </div>
-
-        <!-- 当前文档重命名：失焦或回车提交，与数据一起自动落盘 -->
-        <label class="mb-3 flex items-center gap-2 text-[11px] text-gray-500">
-          <span class="shrink-0">当前名称</span>
-          <input
-            id="doc-name-input"
-            class="h-7 min-w-0 flex-1 rounded-md border border-gray-200 px-2 text-xs text-gray-800 outline-none focus:border-violet-400"
-            type="text"
-            :value="docName"
-            :placeholder="DEFAULT_DOC_NAME"
-            @change="onRename"
-            @keydown.enter="onRenameEnter"
-          />
-        </label>
 
         <!-- 排序：创建时间 / 更新时间，点击切换升降序 -->
         <div class="mb-2 flex items-center gap-2">
@@ -196,14 +253,6 @@ function formatTime(ts: number) {
             还没有流程图，点击左上角「+」新建
           </div>
         </div>
-
-        <button
-          class="mt-3 flex h-8 cursor-pointer items-center justify-center gap-1 rounded-md bg-violet-50 text-xs text-violet-700 hover:bg-violet-100"
-          @click="createDoc"
-        >
-          <Icon name="i-plus" size="h-3.5 w-3.5" />
-          新建流程图
-        </button>
       </div>
     </div>
   </Teleport>
