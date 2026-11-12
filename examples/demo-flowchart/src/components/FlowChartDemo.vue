@@ -1,27 +1,34 @@
 <script setup lang="ts">
-// 流程图 Demo 宿主：显式装配 App + 官方插件预设，再交给 FlowChart 复用
-// （starter-kit 模式，应用层可自由增减/替换插件）。Vue 只管理响应式 UI 状态，
-// 画布与门面实例保持为非响应式变量，避免深度代理破坏内部状态。
+// 流程图 Demo 宿主：只依赖 @silker/flowchart 的公开门面，App 与官方插件的
+// 装配由场景包默认完成。Vue 只管理响应式 UI 状态，画布与门面实例保持为
+// 非响应式变量，避免深度代理破坏内部状态。
 import { onMounted, onUnmounted, ref } from "vue";
-import { App } from "@silker/core";
-import { officialPlugins } from "@silker/preset";
 import { FlowChart } from "@silker/flowchart";
-import type { ShapeKind } from "@silker/flowchart";
+import type { FlowData, ShapeKind } from "@silker/flowchart";
 import { initialData, noteShapes, shapeOptions } from "../lib/flowchart";
+import {
+  DEFAULT_DOC_NAME,
+  deleteDoc,
+  getDoc,
+  listDocs,
+  putDoc,
+  type FlowChartDoc,
+} from "../lib/idb";
 import { useFlowChartAI } from "../composables/useFlowChartAI";
-import Icon from "./Icon.vue";
 import IconSprites from "./IconSprites.vue";
 import FlowChartToolbar from "./FlowChartToolbar.vue";
+import FlowChartDocs from "./FlowChartDocs.vue";
 import AISidebar from "./AISidebar.vue";
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
+const initialized = ref(false);
 const canUndo = ref(false);
 const canRedo = ref(false);
 const zoom = ref(100);
 const copied = ref(false);
 
-let app: App | null = null;
 let flowchart: FlowChart | null = null;
+let offViewportChange: (() => void) | null = null;
 
 const {
   messages,
@@ -36,14 +43,211 @@ const {
   send: sendAi,
   stop: stopAi,
   clear: clearChat,
-  saveConfig,
   toggleSettings,
   toggleSidebar,
+  reset: resetChat,
 } = useFlowChartAI(() => flowchart);
+
+// ---- 文档管理状态（IndexedDB 持久化 + 自动保存）----
+const docs = ref<FlowChartDoc[]>([]);
+const currentId = ref("");
+const docName = ref("");
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let docCreatedAt = 0;
+// 上次落盘内容快照（整图数据 + 名称）：保存前对比，内容未变不写库。
+// 打开/新建时以活模型 toJSON() 建立基线，setData 触发的 onChange 会被跳过
+let lastSaved = "";
+// 列表刷新序号（只接受最新一次结果）、文档切换序号（丢弃迟到的 openDoc）
+let docsSeq = 0;
+let switchToken = 0;
+// 场景还原期间抑制 onSave：切换/新建导致的整图替换不属于用户编辑
+let suppressSave = false;
 
 function syncToolbar() {
   canUndo.value = flowchart?.canUndo ?? false;
   canRedo.value = flowchart?.canRedo ?? false;
+}
+
+function refreshDocs() {
+  const seq = ++docsSeq;
+  return listDocs()
+    .then((all) => {
+      if (seq === docsSeq) docs.value = all;
+    })
+    .catch(() => undefined);
+}
+
+function snapshotOf(data: FlowData, name: string) {
+  return JSON.stringify([data, name]);
+}
+
+function normalizedName() {
+  return docName.value.trim() || DEFAULT_DOC_NAME;
+}
+
+function markSaved() {
+  if (!flowchart) return;
+  lastSaved = snapshotOf(flowchart.toJSON(), normalizedName());
+}
+
+// 把当前场景数据落盘到当前文档：数据 + 名称一起保存，内容未变则跳过
+function saveCurrent(): Promise<void> {
+  if (!flowchart || !currentId.value || suppressSave) return Promise.resolve();
+  const data = flowchart.toJSON();
+  const name = normalizedName();
+  const snapshot = snapshotOf(data, name);
+  if (snapshot === lastSaved) return Promise.resolve();
+  const doc: FlowChartDoc = {
+    id: currentId.value,
+    name,
+    data,
+    createdAt: docCreatedAt,
+    updatedAt: Date.now(),
+  };
+  // 提前建立基线：写库期间的新变更会触发下一次保存，不会被并发写覆盖
+  lastSaved = snapshot;
+  return putDoc(doc)
+    .then(() => refreshDocs())
+    .catch(() => {
+      // 写库失败：清除基线，后续变更会重新触发保存
+      lastSaved = "";
+    });
+}
+
+// 数据变化后防抖自动保存：连续编辑合并为一次写库
+function scheduleSave() {
+  if (!currentId.value || suppressSave) return;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void saveCurrent();
+  }, 600);
+}
+
+// 切换/新建/关闭前立刻落盘：取消待保存的定时器，此时 currentId 尚未变更，归属正确
+function flushSave(): Promise<void> {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  // 强制落盘：即使上次还原场景的抑制标记尚未复位，也不丢失当前文档的编辑
+  suppressSave = false;
+  return saveCurrent();
+}
+
+// 挂载/还原场景：首次以目标文档数据直接构造（model.load 不触发 onChange，
+// 无需抑制自动保存）；后续沿用同一实例（装配与插件不重建），setData
+// 摘旧挂新，并清空撤销栈避免一次 Ctrl+Z 退回上一份文档
+function mountScene(data: FlowData) {
+  const canvas = canvasRef.value;
+  if (!canvas) return;
+  if (!flowchart) {
+    flowchart = new FlowChart({
+      canvas,
+      data,
+      // 第三方形状插件经 plugins 选项装配（在初始数据 load 之前安装）
+      plugins: [noteShapes],
+      // AI 生成适配器：模型只输出语义图，坐标与端口方向由包内布局器计算
+      ai: aiGenerate,
+      onChange: () => {
+        if (suppressSave) return;
+        queueMicrotask(syncToolbar);
+        scheduleSave();
+      },
+    });
+  } else {
+    suppressSave = true;
+    flowchart.setData(data);
+    flowchart.clearHistory();
+    flowchart.center();
+    queueMicrotask(() => {
+      suppressSave = false;
+    });
+  }
+  syncToolbar();
+  markSaved();
+}
+
+function uniqueName(base: string) {
+  const used = new Set(docs.value.map((d) => d.name));
+  if (!used.has(base)) return base;
+  let i = 2;
+  while (used.has(`${base} ${i}`)) i++;
+  return `${base} ${i}`;
+}
+
+// 新建流程图：先落盘当前文档，再以新 id 建档并还原场景；initial 为首档示例数据
+function createNew(initial?: FlowData, name?: string) {
+  switchToken++;
+  suppressSave = false;
+  void flushSave();
+  const now = Date.now();
+  const data: FlowData = initial ?? {
+    nodes: [{ shape: "ellipse", x: 320, y: 200, text: "开始" }],
+    edges: [],
+  };
+  const doc: FlowChartDoc = {
+    id: crypto.randomUUID(),
+    name: name ?? uniqueName(DEFAULT_DOC_NAME),
+    data,
+    createdAt: now,
+    updatedAt: now,
+  };
+  currentId.value = doc.id;
+  docName.value = doc.name;
+  docCreatedAt = now;
+  resetChat();
+  mountScene(data);
+  // 建档即写入带 id 的规范化数据：新档节点原本无 id，setData 会生成，
+  // 持久化它可保证下次打开时节点/连线引用稳定
+  doc.data = flowchart?.toJSON() ?? data;
+  void putDoc(doc)
+    .then(() => refreshDocs())
+    .catch(() => {
+      lastSaved = "";
+    });
+}
+
+// 打开指定文档：先落盘当前文档，再按档内整图数据还原场景
+async function openDoc(id: string) {
+  if (id === currentId.value) return;
+  const token = ++switchToken;
+  suppressSave = false;
+  void flushSave();
+  // 刚建档的写入可能尚未反映到列表，回退到内存列表，避免快速切换时打开失败
+  const doc =
+    (await getDoc(id).catch(() => undefined)) ??
+    docs.value.find((d) => d.id === id);
+  if (!doc || token !== switchToken) return;
+  currentId.value = doc.id;
+  docName.value = doc.name;
+  docCreatedAt = doc.createdAt;
+  resetChat();
+  mountScene(doc.data);
+}
+
+// 删除文档：删除当前文档时不落盘（避免删后又被定时器写回），随后自动新建空白档
+async function removeDoc(id: string) {
+  const token = ++switchToken;
+  const removingCurrent = id === currentId.value;
+  if (removingCurrent && saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  await deleteDoc(id).catch(() => undefined);
+  await refreshDocs();
+  if (token !== switchToken) return;
+  if (removingCurrent) {
+    currentId.value = "";
+    createNew();
+  }
+}
+
+function renameDoc(raw: string) {
+  const name = raw.trim() || DEFAULT_DOC_NAME;
+  if (name === docName.value) return;
+  docName.value = name;
+  void saveCurrent();
 }
 
 function undo() {
@@ -129,61 +333,46 @@ async function exportImageHd() {
 }
 
 function onZoomInput(scale: number) {
-  const host = app;
-  const canvas = canvasRef.value;
-  if (!host || !canvas) return;
-  const vp = host.camera.viewport;
-  const rect = canvas.getBoundingClientRect();
-  // 画布中心的世界坐标在缩放前后保持不动
-  const wx = (rect.width / 2 - vp.x) / vp.scale;
-  const wy = (rect.height / 2 - vp.y) / vp.scale;
-  host.camera.setViewport({
-    x: rect.width / 2 - wx * scale,
-    y: rect.height / 2 - wy * scale,
-    scale,
-  });
-  // setViewport 只更新相机状态，需显式触发相机-only 重渲染
-  host.requestCameraRender();
+  flowchart?.setZoom(scale);
   zoom.value = Math.round(scale * 100);
 }
 
-onMounted(() => {
-  const canvas = canvasRef.value!;
-  const host = new App(canvas);
-  app = host;
-  for (const p of officialPlugins()) host.use(p);
+onMounted(async () => {
+  // 关闭页面前落盘尚未到期的防抖变更
+  window.addEventListener("beforeunload", flushSave);
 
-  // 滚轮等外部视口变化 → 同步滑块与百分比显示
-  host.camera.onViewportChange(() => {
-    zoom.value = Math.min(800, Math.max(20, Math.round(host.camera.scale * 100)));
-  });
-
-  flowchart = new FlowChart({
-    canvas,
-    app: host,
-    data: initialData,
-    // 第三方形状插件经 plugins 选项装配（在初始数据 load 之前安装）
-    plugins: [noteShapes],
-    // AI 生成适配器：模型只输出语义图，坐标与端口方向由包内布局器计算
-    ai: aiGenerate,
-    // 延后一帧同步工具条：构造期若触发变更，此时工具条状态尚未初始化
-    onChange: (type) => {
-      queueMicrotask(() => {
-        console.log(`[FlowChart] ${type}`, JSON.stringify(flowchart?.toJSON()));
-        syncToolbar();
-      });
-    },
-  });
-  syncToolbar();
-  // 临时调试：暴露实例供浏览器自动化测试定位节点（验证后移除）
-  (window as unknown as { __flowchart?: FlowChart }).__flowchart = flowchart;
+  // 直接读档渲染：打开最近编辑的文档；本地无历史文档时以示例数据建首档
+  await refreshDocs();
+  const [latest] = [...docs.value].sort((a, b) => b.updatedAt - a.updatedAt);
+  if (latest) {
+    currentId.value = latest.id;
+    docName.value = latest.name;
+    docCreatedAt = latest.createdAt;
+    mountScene(latest.data);
+  } else {
+    createNew(initialData, "示例流程图");
+  }
+  // 滚轮等外部视口变化 → 同步滑块与百分比显示（门面创建后订阅一次）
+  offViewportChange =
+    flowchart?.onViewportChange((scale) => {
+      zoom.value = Math.min(800, Math.max(20, Math.round(scale * 100)));
+    }) ?? null;
+  // 构造器下一帧居中、再下一帧完成相机重绘，之后显示画布避免跳变
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      initialized.value = true;
+    }),
+  );
 });
 
 onUnmounted(() => {
-  // 只销毁门面自有插件与场景节点，宿主 App 及其官方插件保持可复用
+  window.removeEventListener("beforeunload", flushSave);
+  void flushSave();
+  offViewportChange?.();
+  offViewportChange = null;
+  // 完整拆卸：门面自建宿主上的官方插件随场景一并卸载
   flowchart?.destroy();
   flowchart = null;
-  app = null;
 });
 </script>
 
@@ -192,16 +381,22 @@ onUnmounted(() => {
   <div class="flex h-screen w-screen overflow-hidden">
     <!-- 画布区：悬浮控件锚定于此容器，宽度随 AI 侧边栏开合自动伸缩 -->
     <main id="stage" class="relative h-full min-w-0 flex-1">
-      <canvas ref="canvasRef" class="block h-full w-full bg-white"></canvas>
+      <canvas
+        ref="canvasRef"
+        class="block h-full w-full bg-white"
+        :class="{ invisible: !initialized }"
+      ></canvas>
 
-      <!-- 左上角标识 -->
-      <div
-        class="absolute top-4 left-4 z-10 flex h-10 items-center gap-2 rounded-[10px] bg-white px-3 text-xs shadow-[0_2px_8px_rgba(0,0,0,0.1)] select-none"
-      >
-        <Icon name="i-flow" class="text-violet-500" />
-        <span>流程图</span>
-        <span class="border-l border-gray-200 pl-2 text-[10px] text-gray-400">Silker Demo</span>
-      </div>
+      <!-- 文档切换器：列表 / 重命名 / 新建（画布 onChange 自动保存） -->
+      <FlowChartDocs
+        :docs="docs"
+        :current-id="currentId"
+        :doc-name="docName"
+        @create="createNew()"
+        @open="openDoc"
+        @remove="removeDoc"
+        @rename="renameDoc"
+      />
 
       <FlowChartToolbar
         :can-undo="canUndo"
@@ -229,7 +424,7 @@ onUnmounted(() => {
       <div
         class="absolute bottom-4 left-4 z-10 max-w-[min(680px,calc(100%-32px))] rounded-[10px] border border-gray-200 bg-[rgba(255,255,255,0.92)] px-3 py-2 text-[11px] leading-[1.7] text-gray-500 backdrop-blur-[6px] select-none"
       >
-        点击选中 · 拖拽移动 · 双击编辑文字 · 选中后拖动蓝色圆点连线 · Ctrl+C 复制 · Ctrl+V 粘贴 · Ctrl+Z 撤销 · Ctrl+Y 重做 · Delete 删除 · 滚轮缩放 · 右键拖拽平移
+        编辑后自动保存 · 点击选中 · 拖拽移动 · 双击编辑文字 · 选中后拖动蓝色圆点连线 · Ctrl+C 复制 · Ctrl+V 粘贴 · Ctrl+Z 撤销 · Ctrl+Y 重做 · Delete 删除 · 滚轮缩放 · 右键拖拽平移
       </div>
     </main>
 
@@ -249,7 +444,6 @@ onUnmounted(() => {
       @clear="clearChat"
       @collapse="toggleSidebar"
       @toggle-settings="toggleSettings"
-      @save-config="saveConfig"
     />
   </div>
 </template>

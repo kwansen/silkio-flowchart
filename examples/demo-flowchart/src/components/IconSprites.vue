@@ -6,6 +6,22 @@
       <rect x="14" y="14" width="7" height="7" rx="1.5" />
       <path d="M10 6.5h4a3 3 0 0 1 3 3v4.5" />
     </symbol>
+    <!-- 文档切换器：列表 / 新建 / 展开 / 关闭 -->
+    <symbol id="i-file" viewBox="0 0 24 24">
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 3 14 8 19 8" />
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24">
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24">
+      <polyline points="6 9 12 15 18 9" />
+    </symbol>
+    <symbol id="i-close" viewBox="0 0 24 24">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </symbol>
     <symbol id="i-undo" viewBox="0 0 24 24">
       <polyline points="9 14 4 9 9 4" />
       <path d="M20 20v-7a4 4 0 0 0-4-4H4" />

@@ -114,6 +114,12 @@ export function bindFlowchartCommands(
   hooks: FlowchartCommandHooks,
 ) {
   commands.guard = (e) => {
+    // 焦点在原生表单控件（AI 输入框、文档重命名框、配置输入框等）时按键属于
+    // 文本输入，命令一律不拦截——否则裸键 delete/backspace 会被全局删除命令
+    // 劫持（preventDefault 吞掉删字），输入框无法正常编辑
+    const t = e.target;
+    if (t instanceof HTMLElement && t.matches("input, textarea, select"))
+      return false;
     if (hooks.editing()) return false;
     if (hooks.editorFocused() && !(e.ctrlKey || e.metaKey || e.altKey))
       return false;

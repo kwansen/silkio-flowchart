@@ -665,6 +665,13 @@ export class FlowInteractions {
   }
 
   private onKeyDown(e: KeyboardEvent) {
+    // 焦点在原生表单控件（AI 输入框等）或其它 contenteditable 时按键属于
+    // 文本输入：唤醒编辑会经 editor.start 的 el.focus 抢走输入框焦点（覆盖层
+    // 透明不可见，表现为打字/聚焦 AI 输入框时焦点丢失），方向键也会被劫持去
+    // 微移节点。此处直接放行（画布覆盖层自身按键由其元素级唤醒监听处理）
+    const t = e.target;
+    if (t instanceof HTMLElement && t.matches("input, textarea, select, [contenteditable]"))
+      return;
     // 编辑态按键属于输入，交由覆盖层处理。激活态（覆盖层持焦、未编辑）放行：
     // 可打印字符/IME/Delete 已在覆盖层自身的唤醒键监听里先行处理（唤醒后
     // editing 置位，此处自然短路），方向键落到本处微移选中节点

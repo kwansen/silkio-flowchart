@@ -1,7 +1,7 @@
 // AI 助手的组合式状态：对话历史、流式思考/回答、OpenAI 兼容 SSE 适配器。
 // 画布实例由宿主在 onMounted 创建，故用 getter 延迟取用；适配器经 FlowChart
 // 的 ai 选项注入，模型只输出语义图，坐标与端口方向由包内布局器计算。
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { defaultAIFlowPrompt } from "@silker/flowchart";
 import type { AIFlowGenerate, AIFlowTurn, FlowChart } from "@silker/flowchart";
 import { AI_CONFIG_KEY, isOpsStream, loadAIConfig } from "../lib/ai";
@@ -21,16 +21,25 @@ export function useFlowChartAI(getFlowChart: () => FlowChart | null) {
     () => !!(config.value.baseURL && config.value.apiKey && config.value.model),
   );
 
+  // 配置变更后自动落盘：输入即保存，无需手动提交
+  watch(config, (value) => {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(value));
+    }
+  });
+
   // 当前请求的中止控制器：停止按钮 abort 它以同时中断 fetch 与流式读取
   let abort: AbortController | null = null;
   let seq = 0;
+  // 每次发送 / 切换文档递增：让切换后迟到的 AI 结果与对话不落到新画布上
+  let generation = 0;
 
   function append(message: Omit<ChatMessage, "id">) {
     messages.value.push({ ...message, id: ++seq });
   }
 
   // 浏览器直连要求服务端允许 CORS，否则需经本地代理转发
-  const aiGenerate: AIFlowGenerate = async (req) => {
+  const fetchAIGraph: AIFlowGenerate = async (req) => {
     const { baseURL, apiKey, model } = config.value;
     if (!baseURL || !apiKey || !model) {
       throw new Error("请先点击侧边栏齿轮配置 AI 服务");
@@ -125,6 +134,16 @@ export function useFlowChartAI(getFlowChart: () => FlowChart | null) {
     return content;
   };
 
+  // 切换/新建文档后，迟到的 AI 结果不得再交给 FlowChart.generate 整图替换
+  const aiGenerate: AIFlowGenerate = async (req) => {
+    const gen = generation;
+    const content = await fetchAIGraph(req);
+    if (gen !== generation) {
+      throw new DOMException("请求已中止", "AbortError");
+    }
+    return content;
+  };
+
   // 一次 generate = 语义图解析 + 程序布局 + 整图替换（一次 Ctrl+Z 可撤销）
   async function send() {
     if (busy.value) return;
@@ -151,12 +170,15 @@ export function useFlowChartAI(getFlowChart: () => FlowChart | null) {
       .filter((t) => t.text);
 
     const before = JSON.stringify(flowchart.toJSON());
+    // 标记本次生成：切换/新建文档会递增 generation，使迟到的结果被丢弃
+    const gen = ++generation;
     prompt.value = "";
     append({ role: "user", text });
     busy.value = true;
     pending.value = { reasoning: "", content: "" };
     try {
       const result = await flowchart.generate(text, { history });
+      if (gen !== generation) return;
       const changed = JSON.stringify(result.data) !== before;
       const reasoning = pending.value?.reasoning || undefined;
       pending.value = null;
@@ -169,6 +191,7 @@ export function useFlowChartAI(getFlowChart: () => FlowChart | null) {
         reasoning,
       });
     } catch (e) {
+      if (gen !== generation) return;
       const partial = pending.value?.content ?? "";
       const reasoning = pending.value?.reasoning || undefined;
       pending.value = null;
@@ -186,9 +209,12 @@ export function useFlowChartAI(getFlowChart: () => FlowChart | null) {
         });
       }
     } finally {
-      busy.value = false;
-      pending.value = null;
-      abort = null;
+      // 旧文档的异步收尾不能重置新文档的会话状态
+      if (gen === generation) {
+        busy.value = false;
+        pending.value = null;
+        abort = null;
+      }
     }
   }
 
@@ -196,14 +222,20 @@ export function useFlowChartAI(getFlowChart: () => FlowChart | null) {
     abort?.abort();
   }
 
+  // 切换/新建文档：中止进行中的生成并清空对话，避免旧文档回复污染新画布
+  function reset() {
+    generation++;
+    abort?.abort();
+    abort = null;
+    busy.value = false;
+    pending.value = null;
+    messages.value = [];
+    prompt.value = "";
+  }
+
   function clear() {
     if (busy.value) return;
     messages.value = [];
-  }
-
-  function saveConfig() {
-    localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(config.value));
-    settingsOpen.value = false;
   }
 
   function toggleSettings() {
@@ -227,7 +259,7 @@ export function useFlowChartAI(getFlowChart: () => FlowChart | null) {
     send,
     stop,
     clear,
-    saveConfig,
+    reset,
     toggleSettings,
     toggleSidebar,
   };

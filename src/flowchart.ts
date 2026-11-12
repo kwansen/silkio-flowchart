@@ -12,6 +12,7 @@ import { EXPORT_CAPABILITY, COMMAND_CAPABILITY, CANVAS_CLICK_CAPABILITY } from "
 import { compose } from "@silker/core";
 import { CLIPBOARD_CAPABILITY, hasTextSelection } from "@silker/core";
 import type { ClipboardCapability, ClipboardEntry } from "@silker/core";
+import { officialPlugins } from "@silker/preset";
 import { BuiltinShapes, SHAPE_REGISTRY_CAPABILITY } from "./shape-registry";
 import type { ShapeRegistryCapability } from "./shape-registry";
 import { FlowEdge } from "./FlowEdge";
@@ -54,10 +55,12 @@ import {
 export interface FlowChartOptions {
   canvas: HTMLCanvasElement;
   data: FlowData;
-  // 显式装配点（starter-kit 模式）：传入宿主自建并装配好官方外部插件（视口/指针/
-  // 导出/历史/命令/编辑器/选中，通常经 @silker/preset 的 officialPlugins()）的
-  // App，本场景按能力键复用这些能力、只补齐自有插件；场景包不依赖 preset
-  app: App;
+  // 装配（可选）：默认便捷模式由场景自建 App 并按官方预设装配全部官方插件，
+  // 使用方只需依赖 @silker/flowchart，不接触 @silker/core / @silker/preset。
+  // 需要替换官方实现或与其他场景共用宿主时，传入已装配好官方外部插件（视口/
+  // 指针/导出/历史/命令/编辑器/选中）的 App（显式装配模式）：此时场景只按能力键
+  // 复用这些能力、补齐自有插件，不改动宿主的装配
+  app?: App;
   // 数据变化回调：新增 / 删除 / 移动 / 连线 / 文本编辑结束，当前数据用 toJSON() 导出
   onChange?: (type: FlowChangeType) => void;
   // 额外装配的插件（在官方形状/吸附插件之后、初始数据 load 之前安装）：
@@ -76,9 +79,14 @@ export interface FlowChartOptions {
 //（按点击位置聚焦光标）、端口拖拽连线、Delete 删除。
 // 依赖单向：门面 → interactions/editing/hover → model → Shape/FlowEdge/core
 export class FlowChart {
-  // 装配与渲染属主：私有——外部经门面语义 API（screenToWorld/fit/toImage…）消费，
-  // 装配期定制经 FlowChartOptions.app 传入，避免外部深入内部状态（如 camera.viewport）
+  // 装配与渲染属主：私有——外部经门面语义 API（screenToWorld/fit/toImage…）消费。
+  // 默认由场景自建（便捷模式），显式装配时经 FlowChartOptions.app 传入；
+  // 外部不深入内部状态（如 camera.viewport）
   private app: App;
+  // 便捷模式下场景自建宿主并安装的官方预设插件：destroy 时对称卸载；
+  // 显式装配下为空（宿主插件属宿主所有，保持在线可复用）
+  private hostPlugins: Plugin[] = [];
+  private ownsApp = false;
   private editor: TextEditorCapability;
   // 模型：形状表与连线表的唯一属主（建载/增删/顶替/z 序维护）
   private model!: FlowModel;
@@ -119,10 +127,18 @@ export class FlowChart {
 
   constructor(private options: FlowChartOptions) {
     this.onChange = options.onChange;
-    // 显式装配（starter-kit 模式）：宿主自建 App 并装配官方外部插件（通常用
-    // @silker/preset 的 officialPlugins()），本场景按能力键复用这些能力，
-    // 只补齐自有插件；场景包不依赖 preset，装配缺口由 require 兜底报错
-    this.app = options.app;
+    if (options.app) {
+      // 显式装配（高级用法）：复用宿主自建并装配好官方插件的 App，
+      // 本场景只按能力键复用能力、补齐自有插件，装配缺口由 require 兜底报错
+      this.app = options.app;
+    } else {
+      // 便捷模式（默认）：场景自建 App 并按官方预设装配，使用方无需接触
+      // @silker/core / @silker/preset；场景只拥有自己创建的插件与宿主
+      this.app = new App(options.canvas);
+      this.ownsApp = true;
+      this.hostPlugins = officialPlugins();
+      for (const p of this.hostPlugins) this.app.use(p);
+    }
     this.history = this.app.require(HISTORY_CAPABILITY);
     // 安装官方形状/吸附/边路由插件（自注册各自能力），再装配应用层传入的第三方
     // 插件（可注册/覆盖形状、同名覆盖吸附策略与边路由，初始数据 load 前生效）；
@@ -838,6 +854,38 @@ export class FlowChart {
     return this.app.camera.toWorld(clientX, clientY);
   }
 
+  // 当前缩放比例（只读），写入经 setZoom
+  get zoom(): number {
+    return this.app.camera.viewport.scale;
+  }
+
+  // 订阅视口变化（滚轮缩放 / 拖拽平移 / setZoom 等）：回调收到最新缩放比例，
+  // 返回解绑函数，页面销毁时应撤销以免宿主闭包被相机长期持有
+  onViewportChange(listener: (scale: number) => void): () => void {
+    return this.app.camera.onViewportChange(() => listener(this.app.camera.viewport.scale));
+  }
+
+  // 以画布中心为锚点设置缩放：缩放前后中心对应的世界坐标保持不动。
+  // 工具栏滑块的语义入口，外部无需接触 camera.viewport 与渲染请求
+  setZoom(scale: number) {
+    const rect = this.options.canvas.getBoundingClientRect();
+    const vp = this.app.camera.viewport;
+    const wx = (rect.width / 2 - vp.x) / vp.scale;
+    const wy = (rect.height / 2 - vp.y) / vp.scale;
+    this.app.camera.setViewport({
+      x: rect.width / 2 - wx * scale,
+      y: rect.height / 2 - wy * scale,
+      scale,
+    });
+    // setViewport 只更新相机状态，需显式触发相机-only 重渲染
+    this.app.requestCameraRender();
+  }
+
+  // 清空撤销/重做栈：切换或新建文档时避免一次 Ctrl+Z 退回上一份文档
+  clearHistory() {
+    this.history.clear?.();
+  }
+
   // 适应视图：按全部形状包围盒拟合视口（视口能力的语义化入口，不暴露内部状态）
   fit() {
     const shapes = [...this.model.shapes.values()];
@@ -905,7 +953,8 @@ export class FlowChart {
   // 3) 注销场景命令（键位随命令一并移除）并复位分发守卫；
   // 4) 移除覆盖层节点（常驻置顶注册随之注销）；
   // 5) 卸载构造期安装的插件（能力注册表沿 previous 链撤销/恢复）。
-  // 宿主自建的 App 与官方插件（显式装配）不受影响，可继续复用
+  // 便捷模式下自建宿主上的预设插件随场景卸载（宿主随门面一起废弃）；
+  // 显式装配下宿主 App 与官方插件不受影响，可继续复用
   destroy() {
     this.disposed = true;
     // 历史栈随场景废弃：栈内命令闭包引用本场景形状/模型，场景销毁后命令失效
@@ -927,6 +976,12 @@ export class FlowChart {
     this.app.remove(this.overlay);
     for (const p of this.scenePlugins) this.app.uninstall(p);
     this.scenePlugins = [];
+    // 便捷模式：自建宿主上的官方预设插件也随场景卸载（撤销 DOM 事件监听、
+    // 编辑器元素等）；显式装配下的宿主插件属宿主所有，保持在线可复用
+    if (this.ownsApp) {
+      for (const p of this.hostPlugins) this.app.uninstall(p);
+      this.hostPlugins = [];
+    }
   }
   //#endregion
 

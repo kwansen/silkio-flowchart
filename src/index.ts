@@ -1,4 +1,5 @@
-// 流程图包入口
+// 流程图包入口：默认开箱即用——new FlowChart({ canvas, data }) 由场景自建 App
+// 并装配官方插件预设；需要替换官方实现或共用宿主时经 FlowChartOptions.app 显式装配。
 export { FlowChart } from './flowchart'
 export type { FlowChartOptions } from './flowchart'
 // Plugin 随 FlowChartOptions.plugins 进入公共 API（第三方形状插件实现该接口）

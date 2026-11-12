@@ -21,7 +21,6 @@ const emit = defineEmits<{
   clear: [];
   collapse: [];
   "toggle-settings": [];
-  "save-config": [];
 }>();
 
 // 输入文本与配置经 v-model 与 composable 的 ref 双向同步
@@ -102,7 +101,7 @@ function onKeydown(event: KeyboardEvent) {
       </button>
     </div>
 
-    <!-- 服务配置（OpenAI 兼容接口，localStorage 持久化） -->
+    <!-- 服务配置（OpenAI 兼容接口，输入变更即自动保存到 localStorage） -->
     <div
       v-if="settingsOpen"
       id="ai-settings"
@@ -127,16 +126,9 @@ function onKeydown(event: KeyboardEvent) {
         placeholder="模型名，如 deepseek-chat"
         class="h-8 w-full rounded-lg border border-gray-200 bg-white px-2.5 text-xs text-gray-800 outline-none focus:border-violet-400"
       />
-      <div class="flex items-center justify-between gap-2">
-        <span class="text-[10px] text-gray-400">保存在浏览器本地；服务端需允许跨域或走本地代理</span>
-        <button
-          id="ai-save"
-          class="h-7 shrink-0 cursor-pointer rounded-lg bg-gray-900 px-3 text-xs whitespace-nowrap text-white hover:bg-gray-700"
-          @click="emit('save-config')"
-        >
-          保存
-        </button>
-      </div>
+      <p class="text-[10px] text-gray-400">
+        配置自动保存在浏览器本地；服务端需允许跨域或走本地代理
+      </p>
     </div>
 
     <!-- 消息流 -->
