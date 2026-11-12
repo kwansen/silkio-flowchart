@@ -3,6 +3,7 @@
 // 只依赖调用方传入的数据快照，不触碰 FlowChart 内部状态
 
 import type { CommandCapability } from "@silker/core";
+import { hasDocumentTextSelection } from "@silker/core";
 import type { HistoryCommand, SerializedCommand } from "@silker/core";
 import type { FlowEdge, PortDir } from "./FlowEdge";
 import type { Shape } from "./Shape";
@@ -119,6 +120,15 @@ export function bindFlowchartCommands(
     // 劫持（preventDefault 吞掉删字），输入框无法正常编辑
     const t = e.target;
     if (t instanceof HTMLElement && t.matches("input, textarea, select"))
+      return false;
+    // 文档内存在非折叠文字选区（编辑覆盖层选中文字，或宿主页面其它区域如 AI
+    // 对话面板）时，mod+c/mod+x 属于原生复制/剪切，命令不拦截——否则面板里
+    // 选中的文字复制出来是画布激活节点（与 mindmap 键盘守卫同语义）
+    if (
+      (e.ctrlKey || e.metaKey) &&
+      (e.key === "c" || e.key === "C" || e.key === "x" || e.key === "X") &&
+      hasDocumentTextSelection()
+    )
       return false;
     if (hooks.editing()) return false;
     if (hooks.editorFocused() && !(e.ctrlKey || e.metaKey || e.altKey))

@@ -11,7 +11,7 @@ import type { SelectionCapability, TextEditorCapability } from "@silker/core";
 import { selectionCapabilityKey, HISTORY_CAPABILITY } from "@silker/core";
 import { EXPORT_CAPABILITY, COMMAND_CAPABILITY, CANVAS_CLICK_CAPABILITY } from "@silker/core";
 import { compose } from "@silker/core";
-import { CLIPBOARD_CAPABILITY, hasTextSelection } from "@silker/core";
+import { CLIPBOARD_CAPABILITY, hasDocumentTextSelection } from "@silker/core";
 import type { ClipboardCapability, ClipboardEntry } from "@silker/core";
 import { officialPlugins } from "@silker/preset";
 import { BuiltinShapes, SHAPE_REGISTRY_CAPABILITY } from "./shape-registry";
@@ -187,12 +187,12 @@ export class FlowChart {
       this.cleanups.push(
         this.clipboard.register({
           kind: "flowchart",
-          // copy 全权决策（场景 UX，机制层不窥探选区/编辑状态）：编辑会话中有
-          // 文字选区 → 原生复制文字；其余 → 序列化选中形状
-          onCopy: ({ target }) => {
-            if (this.editing.editing && target?.isContentEditable && hasTextSelection(target)) {
-              return "native";
-            }
+          // copy 全权决策（场景 UX，机制层不窥探选区/编辑状态），选区语义与
+          // mindmap 收口一致："有选区即原生，无选区画布接管"——文档内存在非折叠
+          // 文字选区（编辑覆盖层内选中文字，或宿主页面其它区域如 AI 对话面板）→
+          // 原生复制；无选区（激活态/光标折叠的编辑态）→ 序列化选中形状
+          onCopy: () => {
+            if (hasDocumentTextSelection()) return "native";
             return this.serializeSelection();
           },
           deserialize: (entry) => this.pasteFromEntry(entry),
