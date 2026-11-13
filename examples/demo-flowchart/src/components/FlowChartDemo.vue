@@ -135,6 +135,17 @@ function flushSave(): Promise<void> {
   return saveCurrent();
 }
 
+// 渲染文档后自动适应视图：整图落入视口并居中。仅缩小不放大（缩放上限 100%）：
+// 视口插件的 fit 允许放大到 8 倍，单节点小文档会被放大到数百百分比，文档载入
+// 场景按原尺寸居中即可；工具栏手动「适应视图」保持可放大语义。空文档跳过。
+// AI 渲染（generate → renderAIGraph）不经过此路径，默认不动视口
+function fitScene() {
+  if (!flowchart) return;
+  if (!flowchart.toJSON().nodes.length) return;
+  flowchart.fit();
+  if (flowchart.zoom > 1) flowchart.setZoom(1);
+}
+
 // 挂载/还原场景：首次以目标文档数据直接构造（model.load 不触发 onChange，
 // 无需抑制自动保存）；后续沿用同一实例（装配与插件不重建），setData
 // 摘旧挂新，并清空撤销栈避免一次 Ctrl+Z 退回上一份文档
@@ -155,11 +166,13 @@ function mountScene(data: FlowData) {
         scheduleSave();
       },
     });
+    // 构造器下一帧先居中，随后适应视图覆盖居中（同帧内按注册顺序执行）
+    requestAnimationFrame(() => fitScene());
   } else {
     suppressSave = true;
     flowchart.setData(data);
     flowchart.clearHistory();
-    flowchart.center();
+    fitScene();
     queueMicrotask(() => {
       suppressSave = false;
     });
@@ -413,11 +426,6 @@ onUnmounted(() => {
         @toggle-ai="toggleSidebar"
       />
 
-      <div
-        class="absolute bottom-4 left-4 z-10 max-w-[min(680px,calc(100%-32px))] rounded-[10px] border border-gray-200 bg-[rgba(255,255,255,0.92)] px-3 py-2 text-[11px] leading-[1.7] text-gray-500 backdrop-blur-[6px] select-none"
-      >
-        编辑后自动保存 · 点击选中 · 拖拽移动 · 双击编辑文字 · 选中后拖动蓝色圆点连线 · Ctrl+C 复制 · Ctrl+V 粘贴 · Ctrl+Z 撤销 · Ctrl+Y 重做 · Delete 删除 · 滚轮缩放 · 右键拖拽平移
-      </div>
     </main>
 
     <!-- AI 助手侧边栏：并列布局面板，保留对话历史 / 流式思考 / 执行反馈。

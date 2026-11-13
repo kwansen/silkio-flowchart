@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // AI 助手侧边栏：对话历史 / 流式思考 / 执行反馈 / 服务配置。
 // 只负责展示与交互事件，状态与网络逻辑由 useFlowChartAI 提供。
-import { computed, ref, watch } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { isOpsStream } from "../lib/ai";
 import type { AIConfig, ChatMessage, PendingReply } from "../lib/ai";
 import Icon from "./Icon.vue";
@@ -27,18 +27,26 @@ const emit = defineEmits<{
 const prompt = defineModel<string>({ required: true });
 const config = defineModel<AIConfig>("config", { required: true });
 
-const baseURL = computed({
-  get: () => config.value.baseURL,
-  set: (value: string) => (config.value = { ...config.value, baseURL: value }),
-});
-const apiKey = computed({
-  get: () => config.value.apiKey,
-  set: (value: string) => (config.value = { ...config.value, apiKey: value }),
-});
-const model = computed({
-  get: () => config.value.model,
-  set: (value: string) => (config.value = { ...config.value, model: value }),
-});
+// 配置草稿：输入不直接落盘，点「保存」后写回 config（composable 的 watch 统一持久化）。
+// 打开面板时从已保存配置同步，关闭面板丢弃未保存草稿
+const draft = reactive({ baseURL: "", apiKey: "", model: "" });
+watch(
+  () => props.settingsOpen,
+  (open) => {
+    if (open) Object.assign(draft, config.value);
+  },
+  { immediate: true },
+);
+
+// 保存后按钮短暂显示「已保存」作为落盘反馈
+const saved = ref(false);
+let savedTimer: ReturnType<typeof setTimeout> | undefined;
+function saveConfig() {
+  config.value = { ...draft };
+  saved.value = true;
+  clearTimeout(savedTimer);
+  savedTimer = setTimeout(() => (saved.value = false), 1500);
+}
 
 const pendingStatus = computed(() => {
   const p = props.pending;
@@ -101,7 +109,7 @@ function onKeydown(event: KeyboardEvent) {
       </button>
     </div>
 
-    <!-- 服务配置（OpenAI 兼容接口，输入变更即自动保存到 localStorage） -->
+    <!-- 服务配置（OpenAI 兼容接口，草稿输入，点「保存」落盘 localStorage） -->
     <div
       v-if="settingsOpen"
       id="ai-settings"
@@ -109,26 +117,39 @@ function onKeydown(event: KeyboardEvent) {
     >
       <input
         id="ai-base-url"
-        v-model="baseURL"
+        v-model="draft.baseURL"
         placeholder="接口地址（含 /v1），如 https://api.deepseek.com/v1"
         class="h-8 w-full rounded-lg border border-gray-200 bg-white px-2.5 text-xs text-gray-800 outline-none focus:border-violet-400"
+        @keydown.enter="saveConfig"
       />
       <input
         id="ai-api-key"
-        v-model="apiKey"
+        v-model="draft.apiKey"
         type="password"
         placeholder="API Key"
         class="h-8 w-full rounded-lg border border-gray-200 bg-white px-2.5 text-xs text-gray-800 outline-none focus:border-violet-400"
+        @keydown.enter="saveConfig"
       />
       <input
         id="ai-model"
-        v-model="model"
+        v-model="draft.model"
         placeholder="模型名，如 deepseek-chat"
         class="h-8 w-full rounded-lg border border-gray-200 bg-white px-2.5 text-xs text-gray-800 outline-none focus:border-violet-400"
+        @keydown.enter="saveConfig"
       />
-      <p class="text-[10px] text-gray-400">
-        配置自动保存在浏览器本地；服务端需允许跨域或走本地代理
-      </p>
+      <div class="flex items-center justify-between gap-2">
+        <p class="min-w-0 text-[10px] text-gray-400">
+          配置保存在浏览器本地；服务端需允许跨域或走本地代理
+        </p>
+        <button
+          id="ai-config-save"
+          class="h-7 shrink-0 cursor-pointer rounded-lg px-3 text-xs text-white transition-colors"
+          :class="saved ? 'bg-emerald-500 hover:bg-emerald-500' : 'bg-violet-500 hover:bg-violet-600'"
+          @click="saveConfig"
+        >
+          {{ saved ? "已保存" : "保存" }}
+        </button>
+      </div>
     </div>
 
     <!-- 消息流 -->

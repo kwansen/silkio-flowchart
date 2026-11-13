@@ -21,7 +21,8 @@ export function useFlowChartAI(getFlowChart: () => FlowChart | null) {
     () => !!(config.value.baseURL && config.value.apiKey && config.value.model),
   );
 
-  // 配置变更后自动落盘：输入即保存，无需手动提交
+  // 配置变更后自动落盘：侧边栏以草稿编辑，点「保存」写回 config（含初始化载入），
+  // 此处统一持久化到 localStorage，组件内不直接触达存储
   watch(config, (value) => {
     if (typeof localStorage !== "undefined") {
       localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(value));
