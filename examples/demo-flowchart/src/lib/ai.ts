@@ -1,10 +1,15 @@
 // AI 侧边栏共享的数据模型与小工具（纯 TS，无 DOM 事件绑定）
 import type { AIFlowStep } from "silkio-flowchart";
 
+// API 格式：openai = OpenAI Chat Completions 兼容接口（含各兼容网关），
+// anthropic = Anthropic Messages 原生格式
+export type AIFormat = "openai" | "anthropic";
+
 export interface AIConfig {
   baseURL: string;
   apiKey: string;
   model: string;
+  format: AIFormat;
 }
 
 export interface ChatMessage {
@@ -25,7 +30,7 @@ export interface PendingReply {
 export const AI_CONFIG_KEY = "flowchart-ai-config";
 
 export function loadAIConfig(): AIConfig {
-  const empty: AIConfig = { baseURL: "", apiKey: "", model: "" };
+  const empty: AIConfig = { baseURL: "", apiKey: "", model: "", format: "openai" };
   if (typeof localStorage === "undefined") return empty;
   try {
     return {

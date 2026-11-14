@@ -41,22 +41,34 @@ export function useFlowChartAI(getFlowChart: () => FlowChart | null) {
 
   // 浏览器直连要求服务端允许 CORS，否则需经本地代理转发
   const fetchAIGraph: AIFlowGenerate = async (req) => {
-    const { baseURL, apiKey, model } = config.value;
+    const { baseURL, apiKey, model, format } = config.value;
     if (!baseURL || !apiKey || !model) {
       throw new Error("请先点击侧边栏齿轮配置 AI 服务");
     }
+    const prompt = defaultAIFlowPrompt(req);
+    return format === "anthropic"
+      ? fetchAnthropicStream({ baseURL, apiKey, model }, prompt)
+      : fetchOpenAIStream({ baseURL, apiKey, model }, prompt);
+  };
+
+  // OpenAI Chat Completions 兼容格式（默认）：SSE 解析 choices[0].delta，
+  // 思考过程取 reasoning_content / reasoning
+  async function fetchOpenAIStream(
+    cfg: { baseURL: string; apiKey: string; model: string },
+    prompt: string,
+  ): Promise<string> {
     const ac = new AbortController();
     abort = ac;
-    const res = await fetch(baseURL.replace(/\/+$/, "") + "/chat/completions", {
+    const res = await fetch(cfg.baseURL.replace(/\/+$/, "") + "/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${cfg.apiKey}`,
       },
       signal: ac.signal,
       body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content: defaultAIFlowPrompt(req) }],
+        model: cfg.model,
+        messages: [{ role: "user", content: prompt }],
         temperature: 0.3,
         stream: true,
       }),
@@ -133,7 +145,99 @@ export function useFlowChartAI(getFlowChart: () => FlowChart | null) {
       throw new Error("AI 服务返回内容为空");
     }
     return content;
-  };
+  }
+
+  // Anthropic Messages 原生格式：baseURL 需含 /v1（如 https://api.anthropic.com/v1），
+  // 端点为 baseURL + /messages；鉴权用 x-api-key + anthropic-version 头。
+  // 浏览器直连官方 API 必须显式声明 anthropic-dangerous-direct-browser-access 才允许
+  // CORS。扩展思考（thinking）要求固定 temperature=1 且按模型逐个开启，此处不默认
+  // 发送——Anthropic 模式下思考过程为空，仅答案文本流式展示
+  async function fetchAnthropicStream(
+    cfg: { baseURL: string; apiKey: string; model: string },
+    prompt: string,
+  ): Promise<string> {
+    const ac = new AbortController();
+    abort = ac;
+    const res = await fetch(cfg.baseURL.replace(/\/+$/, "") + "/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": cfg.apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      signal: ac.signal,
+      body: JSON.stringify({
+        model: cfg.model,
+        max_tokens: 8192,
+        temperature: 0.3,
+        messages: [{ role: "user", content: prompt }],
+        stream: true,
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        `AI 服务请求失败（HTTP ${res.status}）${text ? `：${text.slice(0, 160)}` : ""}`,
+      );
+    }
+    // 服务端不支持流式（一次性 JSON）：content 数组按块类型分离思考与答案
+    if (!res.body) {
+      const json = await res.json();
+      const blocks: Array<{ type: string; text?: string; thinking?: string }> =
+        json?.content ?? [];
+      const p = pending.value;
+      if (p) {
+        p.reasoning = blocks
+          .filter((b) => b.type === "thinking")
+          .map((b) => b.thinking ?? "")
+          .join("");
+      }
+      const content = blocks
+        .filter((b) => b.type === "text")
+        .map((b) => b.text ?? "")
+        .join("");
+      if (!content) throw new Error("AI 服务返回内容为空");
+      if (p) p.content = content;
+      return content;
+    }
+
+    // SSE 流式解析：content_block_delta 事件按 delta.type 分离
+    // 思考（thinking_delta）与答案（text_delta）
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let content = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        const s = line.trim();
+        if (!s.startsWith("data:")) continue;
+        const payload = s.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        try {
+          const event = JSON.parse(payload);
+          if (event?.type !== "content_block_delta" || !event.delta) continue;
+          const delta = event.delta;
+          const p = pending.value;
+          if (delta.type === "thinking_delta" && delta.thinking && p) {
+            p.reasoning += delta.thinking;
+          } else if (delta.type === "text_delta" && delta.text) {
+            content += delta.text;
+            if (p) p.content = content;
+          }
+        } catch {
+          // 忽略无法解析的行（ping/心跳等）
+        }
+      }
+    }
+    if (!content) throw new Error("AI 服务返回内容为空");
+    return content;
+  }
 
   // 切换/新建文档后，迟到的 AI 结果不得再交给 FlowChart.generate 整图替换
   const aiGenerate: AIFlowGenerate = async (req) => {

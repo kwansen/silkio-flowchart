@@ -29,7 +29,12 @@ const config = defineModel<AIConfig>("config", { required: true });
 
 // 配置草稿：输入不直接落盘，点「保存」后写回 config（composable 的 watch 统一持久化）。
 // 打开面板时从已保存配置同步，关闭面板丢弃未保存草稿
-const draft = reactive({ baseURL: "", apiKey: "", model: "" });
+const draft = reactive({
+  baseURL: "",
+  apiKey: "",
+  model: "",
+  format: "openai" as AIConfig["format"],
+});
 watch(
   () => props.settingsOpen,
   (open) => {
@@ -109,16 +114,28 @@ function onKeydown(event: KeyboardEvent) {
       </button>
     </div>
 
-    <!-- 服务配置（OpenAI 兼容接口，草稿输入，点「保存」落盘 localStorage） -->
+    <!-- 服务配置（草稿输入，点「保存」落盘 localStorage） -->
     <div
       v-if="settingsOpen"
       id="ai-settings"
       class="flex flex-col gap-2 border-b border-gray-100 bg-gray-50 p-3"
     >
+      <select
+        id="ai-format"
+        v-model="draft.format"
+        class="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-xs text-gray-800 outline-none focus:border-violet-400"
+      >
+        <option value="openai">OpenAI 兼容格式（chat/completions）</option>
+        <option value="anthropic">Anthropic 格式（messages）</option>
+      </select>
       <input
         id="ai-base-url"
         v-model="draft.baseURL"
-        placeholder="接口地址（含 /v1），如 https://api.deepseek.com/v1"
+        :placeholder="
+          draft.format === 'anthropic'
+            ? '接口地址（含 /v1），如 https://api.anthropic.com/v1'
+            : '接口地址（含 /v1），如 https://api.deepseek.com/v1'
+        "
         class="h-8 w-full rounded-lg border border-gray-200 bg-white px-2.5 text-xs text-gray-800 outline-none focus:border-violet-400"
         @keydown.enter="saveConfig"
       />
@@ -133,7 +150,7 @@ function onKeydown(event: KeyboardEvent) {
       <input
         id="ai-model"
         v-model="draft.model"
-        placeholder="模型名，如 deepseek-chat"
+        :placeholder="draft.format === 'anthropic' ? '模型名，如 claude-sonnet-4-5' : '模型名，如 deepseek-chat'"
         class="h-8 w-full rounded-lg border border-gray-200 bg-white px-2.5 text-xs text-gray-800 outline-none focus:border-violet-400"
         @keydown.enter="saveConfig"
       />
