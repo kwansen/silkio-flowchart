@@ -53,25 +53,26 @@ export const noteShapes: Plugin = {
   },
 };
 
-// 开始 → 处理 → 判断 →（通过/驳回）两条分支
+// 输入整数 → 计算除以 2 的余数 → 判断 →（偶数/奇数）两条分支
 export const initialData: FlowData = {
   nodes: [
     { id: "start", shape: "ellipse", x: 60, y: 220, text: "开始" },
-    { id: "handle", shape: "rect", x: 300, y: 220, text: "处理请求" },
-    { id: "check", shape: "diamond", x: 560, y: 220, text: "校验通过？" },
-    { id: "ok", shape: "ellipse", x: 840, y: 100, text: "返回成功" },
-    { id: "retry", shape: "rect", x: 840, y: 330, text: "返回错误" },
-    // 第三方形状（note 插件经 plugins 选项装配后，初始数据即可用）
-    { id: "note1", shape: "note", x: 300, y: 420, text: "自定义形状：便签" },
+    { id: "input", shape: "parallelogram", x: 300, y: 220, text: "输入整数" },
+    { id: "calc", shape: "rect", x: 540, y: 220, text: "计算除以 2 的余数" },
+    { id: "check", shape: "diamond", x: 780, y: 220, text: "余数为 0？" },
+    { id: "even", shape: "parallelogram", x: 1020, y: 41, text: "偶数" },
+    { id: "odd", shape: "parallelogram", x: 1020, y: 399, text: "奇数" },
+    { id: "end", shape: "ellipse", x: 1260, y: 220, text: "结束" },
   ],
   edges: [
-    { from: "start", to: "handle" },
-    { from: "handle", to: "check" },
-    // 分支线带标签与显式出入端口：「是」从判断节点右侧出、左侧进成功端
-    { from: "check", to: "ok", text: "是", fromDir: "right", toDir: "left" },
-    { from: "check", to: "retry", text: "否", fromDir: "bottom", toDir: "top" },
-    // 演示四向端口与方向锁定：从「开始」底部竖直引出，竖直接入「返回错误」顶部
-    { from: "start", to: "retry", fromDir: "bottom", toDir: "top" },
+    { from: "start", to: "input" ,fromDir: "right", toDir: "left"},
+    { from: "input", to: "calc",fromDir: "right", toDir: "left" },
+    { from: "calc", to: "check",fromDir: "right", toDir: "left" },
+    // 分支线带标签与显式出入端口：「余 0」从判断节点右侧出、左侧进偶数端
+    { from: "check", to: "even", text: "是", fromDir: "top", toDir: "left" },
+    { from: "check", to: "odd", text: "否", fromDir: "bottom", toDir: "left" },
+    { from: "even", to: "end", fromDir: "right", toDir: "top" },
+    { from: "odd", to: "end", fromDir: "right", toDir: "bottom" },
   ],
 };
 
