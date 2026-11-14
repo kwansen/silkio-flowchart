@@ -64,7 +64,7 @@ export interface FlowChartOptions {
   canvas: HTMLCanvasElement;
   data: FlowData;
   // 装配（可选）：默认便捷模式由场景自建 App 并按官方预设装配全部官方插件，
-  // 使用方只需依赖 @silkor/flowchart，不接触 @silkor/core / @silkor/preset。
+  // 使用方只需依赖 silkio-flowchart，不接触 @silkor/core / @silkor/preset。
   // 需要替换官方实现或与其他场景共用宿主时，传入已装配好官方外部插件（视口/
   // 指针/导出/历史/命令/编辑器/选中）的 App（显式装配模式）：此时场景只按能力键
   // 复用这些能力、补齐自有插件，不改动宿主的装配

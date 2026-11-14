@@ -2,8 +2,8 @@
 // 画布实例由宿主在 onMounted 创建，故用 getter 延迟取用；适配器经 FlowChart
 // 的 ai 选项注入，模型只输出语义图，坐标与端口方向由包内布局器计算。
 import { computed, ref, watch } from "vue";
-import { defaultAIFlowPrompt } from "@silkor/flowchart";
-import type { AIFlowGenerate, AIFlowTurn, FlowChart } from "@silkor/flowchart";
+import { defaultAIFlowPrompt } from "silkio-flowchart";
+import type { AIFlowGenerate, AIFlowTurn, FlowChart } from "silkio-flowchart";
 import { AI_CONFIG_KEY, isOpsStream, loadAIConfig } from "../lib/ai";
 import type { AIConfig, ChatMessage, PendingReply } from "../lib/ai";
 

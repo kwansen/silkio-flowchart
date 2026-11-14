@@ -1,7 +1,7 @@
 // IndexedDB 持久化：流程图文档的存取（新建/打开/自动保存/重命名/删除）。
 // 单对象仓库 flowcharts，主键 id；记录内嵌整图数据（节点 + 连线，含稳定 id），
 // 打开时经 FlowChart.setData 整图还原。与 demo-mindmap 的 idb.ts 同构。
-import type { FlowData } from "@silkor/flowchart";
+import type { FlowData } from "silkio-flowchart";
 
 export interface FlowChartDoc {
   id: string;

@@ -27,7 +27,7 @@ importers:
       '@astrojs/vue':
         specifier: ^5.0.0
         version: 5.1.4(astro@5.18.2(jiti@2.7.0)(lightningcss@1.33.0)(rollup@4.68.2)(typescript@6.0.3))(jiti@2.7.0)(lightningcss@1.33.0)(rollup@4.68.2)(vue@3.5.45(typescript@6.0.3))
-      '@silkor/flowchart':
+      'silkio-flowchart':
         specifier: workspace:*
         version: link:../..
       '@tailwindcss/vite':

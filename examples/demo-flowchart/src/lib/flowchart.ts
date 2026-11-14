@@ -1,13 +1,13 @@
-// 流程图示例数据与第三方形状扩展：只依赖 @silkor/flowchart 的公开导出，
+// 流程图示例数据与第三方形状扩展：只依赖 silkio-flowchart 的公开导出，
 // UI 层（Vue 组件）通过能力键装配即可，不接触 FlowChart 内部实现
-import { Shape, SHAPE_REGISTRY_CAPABILITY } from "@silkor/flowchart";
+import { Shape, SHAPE_REGISTRY_CAPABILITY } from "silkio-flowchart";
 import type {
   FlowData,
   Plugin,
   ShapeKind,
   ShapeOptions,
   ShapeStyle,
-} from "@silkor/flowchart";
+} from "silkio-flowchart";
 
 // 便签（折角矩形）：演示外部形状经形状注册表插件注册
 class NoteShape extends Shape {

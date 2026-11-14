@@ -2,7 +2,7 @@
 // 胶囊工具条：撤销/重做、添加/替换形状、剪贴板、适应视图、导出、缩放。
 // 悬浮面板（hover intent）是纯 UI 状态，画布动作全部 emit 给宿主组件。
 import { computed, onUnmounted, ref } from "vue";
-import type { ShapeKind } from "@silkor/flowchart";
+import type { ShapeKind } from "silkio-flowchart";
 import type { ShapeOption } from "../lib/flowchart";
 import Icon from "./Icon.vue";
 

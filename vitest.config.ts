@@ -9,7 +9,7 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   resolve: {
-    alias: { "@silkor/flowchart": resolve(root, "src/index.ts") },
+    alias: { "silkio-flowchart": resolve(root, "src/index.ts") },
   },
   test: {
     include: ["tests/**/*.test.ts"],
