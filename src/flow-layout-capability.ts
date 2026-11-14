@@ -1,4 +1,4 @@
-import { capabilityKey } from "@silker/core";
+import { capabilityKey } from "@silkor/core";
 import type { AIFlowGraph } from "./ai-protocol";
 import type { FlowData } from "./data";
 import type { FlowLayoutOptions } from "./auto-layout";

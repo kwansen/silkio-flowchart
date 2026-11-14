@@ -2,7 +2,7 @@
 // 这里用鸭子类型形状桩 + 轻量 FlowEdge 桩（保留真实方向常量），只验证
 // 几何、端口方向、类型/文字传递与「节点 + 连线」一条原子命令。
 import { describe, expect, it, vi } from "vitest";
-import type { HistoryCapability, HistoryCommand } from "@silker/core";
+import type { HistoryCapability, HistoryCommand } from "@silkor/core";
 import { placeNodeInDirection } from "../src/geometry";
 import type { FlowModel } from "../src/model";
 import { createNodeInDirection } from "../src/quick-create";

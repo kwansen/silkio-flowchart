@@ -1,5 +1,5 @@
-import { App } from "@silker/core";
-import type { SelectionCapability } from "@silker/core";
+import { App } from "@silkor/core";
+import type { SelectionCapability } from "@silkor/core";
 import { FlowEdge } from "./FlowEdge";
 import type { PortDir } from "./FlowEdge";
 import { Shape } from "./Shape";

@@ -1,7 +1,7 @@
-import { App } from "@silker/core";
-import type { HistoryCapability } from "@silker/core";
-import type { Text } from "@silker/core";
-import type { TextEditorCapability } from "@silker/core";
+import { App } from "@silkor/core";
+import type { HistoryCapability } from "@silkor/core";
+import type { Text } from "@silkor/core";
+import type { TextEditorCapability } from "@silkor/core";
 import { textCommand, edgeTextCommand } from "./commands";
 import { Shape } from "./Shape";
 import { FlowEdge } from "./FlowEdge";

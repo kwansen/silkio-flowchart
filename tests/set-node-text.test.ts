@@ -2,7 +2,7 @@
 // 复用双击编辑同一条 textCommand 历史路径、无变化/找不到节点不记命令。
 // Shape 用原型桩（layout 覆写为空操作，避开 Text 的 DOM 文本测量）。
 import { describe, expect, it } from "vitest";
-import type { HistoryCapability, HistoryCommand } from "@silker/core";
+import type { HistoryCapability, HistoryCommand } from "@silkor/core";
 import { FlowChart } from "../src/flowchart";
 import { Shape } from "../src/Shape";
 

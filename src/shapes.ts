@@ -4,7 +4,7 @@ import { PORT_STUB } from "./FlowEdge";
 // 形状几何（路径构建/命中判定）复用 core 的绘制原语，flowchart 只保留领域逻辑
 // （锚点 boundaryT、端口 portAt、文本内接 textFit）；core 的 Parallelogram 与
 // 本包同名类冲突，按别名引入
-import { Rect, Ellipse, Parallelogram as CoreParallelogram } from "@silker/core";
+import { Rect, Ellipse, Parallelogram as CoreParallelogram } from "@silkor/core";
 
 // 圆角矩形（流程步骤）：默认矩形命中
 export class RectShape extends Shape {

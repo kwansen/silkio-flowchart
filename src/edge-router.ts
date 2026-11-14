@@ -1,6 +1,6 @@
-import { capabilityKey } from "@silker/core";
-import type { App, Plugin } from "@silker/core";
-import type { EdgePoint } from "@silker/core";
+import { capabilityKey } from "@silkor/core";
+import type { App, Plugin } from "@silkor/core";
+import type { EdgePoint } from "@silkor/core";
 import { FlowEdge } from "./FlowEdge";
 import type { PortDir } from "./FlowEdge";
 import { drawEdgeArrow, renderOrthoPolyline, trimEdgeEnd } from "./FlowEdge";

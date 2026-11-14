@@ -1,4 +1,4 @@
-﻿﻿import { App, VIEWPORT_CAPABILITY, TEXT_EDITOR_CAPABILITY } from "@silker/core";
+﻿﻿import { App, VIEWPORT_CAPABILITY, TEXT_EDITOR_CAPABILITY } from "@silkor/core";
 import type {
   ExportOptions,
   HistoryCapability,
@@ -6,14 +6,14 @@ import type {
   HistorySnapshot,
   Plugin,
   SerializedCommand,
-} from "@silker/core";
-import type { SelectionCapability, TextEditorCapability } from "@silker/core";
-import { selectionCapabilityKey, HISTORY_CAPABILITY } from "@silker/core";
-import { EXPORT_CAPABILITY, COMMAND_CAPABILITY, CANVAS_CLICK_CAPABILITY } from "@silker/core";
-import { compose } from "@silker/core";
-import { CLIPBOARD_CAPABILITY, hasDocumentTextSelection } from "@silker/core";
-import type { ClipboardCapability, ClipboardEntry } from "@silker/core";
-import { officialPlugins } from "@silker/preset";
+} from "@silkor/core";
+import type { SelectionCapability, TextEditorCapability } from "@silkor/core";
+import { selectionCapabilityKey, HISTORY_CAPABILITY } from "@silkor/core";
+import { EXPORT_CAPABILITY, COMMAND_CAPABILITY, CANVAS_CLICK_CAPABILITY } from "@silkor/core";
+import { compose } from "@silkor/core";
+import { CLIPBOARD_CAPABILITY, hasDocumentTextSelection } from "@silkor/core";
+import type { ClipboardCapability, ClipboardEntry } from "@silkor/core";
+import { officialPlugins } from "@silkor/preset";
 import { BuiltinShapes, SHAPE_REGISTRY_CAPABILITY } from "./shape-registry";
 import type { ShapeRegistryCapability } from "./shape-registry";
 import { FlowEdge, OPPOSITE_DIR } from "./FlowEdge";
@@ -64,7 +64,7 @@ export interface FlowChartOptions {
   canvas: HTMLCanvasElement;
   data: FlowData;
   // 装配（可选）：默认便捷模式由场景自建 App 并按官方预设装配全部官方插件，
-  // 使用方只需依赖 @silker/flowchart，不接触 @silker/core / @silker/preset。
+  // 使用方只需依赖 @silkor/flowchart，不接触 @silkor/core / @silkor/preset。
   // 需要替换官方实现或与其他场景共用宿主时，传入已装配好官方外部插件（视口/
   // 指针/导出/历史/命令/编辑器/选中）的 App（显式装配模式）：此时场景只按能力键
   // 复用这些能力、补齐自有插件，不改动宿主的装配
@@ -112,7 +112,7 @@ export class FlowChart {
   // 构造期安装的插件（官方形状/吸附/边路由 + 应用层第三方）：destroy 时对称卸载
   private scenePlugins: Plugin[] = [];
   private onChange?: (type: FlowChangeType) => void;
-  // 命令模式历史记录：实现在 @silker/plugin-history，构造器内安装插件后按能力键消费；
+  // 命令模式历史记录：实现在 @silkor/plugin-history，构造器内安装插件后按能力键消费；
   // 各变更入口把"改模型"抽成可逆命令入栈，undo/redo 时重放/逆放
   private history!: HistoryCapability;
   // 形状注册表（BuiltinShapes 插件 install 时注册，第三方形状插件可追加/覆盖条目）：
@@ -141,7 +141,7 @@ export class FlowChart {
       this.app = options.app;
     } else {
       // 便捷模式（默认）：场景自建 App 并按官方预设装配，使用方无需接触
-      // @silker/core / @silker/preset；场景只拥有自己创建的插件与宿主
+      // @silkor/core / @silkor/preset；场景只拥有自己创建的插件与宿主
       this.app = new App(options.canvas);
       this.ownsApp = true;
       this.hostPlugins = officialPlugins();

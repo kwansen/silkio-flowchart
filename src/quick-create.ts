@@ -1,5 +1,5 @@
-import { compose } from "@silker/core";
-import type { HistoryCapability } from "@silker/core";
+import { compose } from "@silkor/core";
+import type { HistoryCapability } from "@silkor/core";
 import { FlowEdge, OPPOSITE_DIR } from "./FlowEdge";
 import type { PortDir } from "./FlowEdge";
 import { shapeData } from "./commands";

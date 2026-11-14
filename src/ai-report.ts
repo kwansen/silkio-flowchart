@@ -1,4 +1,4 @@
-import type { SerializedCommand } from "@silker/core";
+import type { SerializedCommand } from "@silkor/core";
 import type { MovePayload, RenderPayload, ResizePayload, ReconnectPayload, TextPayload, EdgeTextPayload, ConnectPayload } from "./commands";
 import type { AddShapePayload, DeletePayload, ReplacePayload } from "./history-codec";
 import type { FlowModel } from "./model";

@@ -3,7 +3,7 @@
 export { FlowChart } from './flowchart'
 export type { FlowChartOptions } from './flowchart'
 // Plugin 随 FlowChartOptions.plugins 进入公共 API（第三方形状插件实现该接口）
-export type { Plugin } from '@silker/core'
+export type { Plugin } from '@silkor/core'
 export { Shape } from './Shape'
 export type { ShapeStyle, ShapeOptions } from './Shape'
 export {

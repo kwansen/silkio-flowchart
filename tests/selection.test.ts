@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SelectionCapability } from "@silker/core";
+import type { SelectionCapability } from "@silkor/core";
 import { FlowEdge } from "../src/FlowEdge";
 import { Shape } from "../src/Shape";
 import { multiBounds, selEdge, selShape, selShapes } from "../src/selection";

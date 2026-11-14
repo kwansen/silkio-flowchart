@@ -2,7 +2,7 @@
 // 的端口方向、端点节点、语义定位与一条原子命令（一次 undo 整体回退）。
 // Shape/FlowEdge 用原型桩，避开 Text 的 DOM 文本测量。
 import { describe, expect, it } from "vitest";
-import type { HistoryCapability, HistoryCommand } from "@silker/core";
+import type { HistoryCapability, HistoryCommand } from "@silkor/core";
 import { FlowChart } from "../src/flowchart";
 import { FlowEdge } from "../src/FlowEdge";
 import type { PortDir } from "../src/FlowEdge";

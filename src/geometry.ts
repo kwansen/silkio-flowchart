@@ -2,7 +2,7 @@
 // 目标查找——不持有画布或交互状态，输入数据、输出结果，供交互策略组合调用；
 // 常量为屏幕像素口径，调用方按视口缩放换算成世界坐标
 
-import type { Node } from "@silker/core";
+import type { Node } from "@silkor/core";
 import { Shape } from "./Shape";
 import { OPPOSITE_DIR, PORT_DIR_VEC } from "./FlowEdge";
 import type { FlowEdge, PortDir } from "./FlowEdge";

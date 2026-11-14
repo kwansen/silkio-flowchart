@@ -2,9 +2,9 @@
 // 各类交互变更（移动/缩放/微调/重接/文本）的 HistoryCommand 在此构造——
 // 只依赖调用方传入的数据快照，不触碰 FlowChart 内部状态
 
-import type { CommandCapability } from "@silker/core";
-import { hasDocumentTextSelection } from "@silker/core";
-import type { HistoryCommand, SerializedCommand } from "@silker/core";
+import type { CommandCapability } from "@silkor/core";
+import { hasDocumentTextSelection } from "@silkor/core";
+import type { HistoryCommand, SerializedCommand } from "@silkor/core";
 import type { FlowEdge, PortDir } from "./FlowEdge";
 import type { Shape } from "./Shape";
 import type { Bounds } from "./snap";

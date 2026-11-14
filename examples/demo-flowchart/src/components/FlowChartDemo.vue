@@ -1,10 +1,10 @@
 <script setup lang="ts">
-// 流程图 Demo 宿主：只依赖 @silker/flowchart 的公开门面，App 与官方插件的
+// 流程图 Demo 宿主：只依赖 @silkor/flowchart 的公开门面，App 与官方插件的
 // 装配由场景包默认完成。Vue 只管理响应式 UI 状态，画布与门面实例保持为
 // 非响应式变量，避免深度代理破坏内部状态。
 import { onMounted, onUnmounted, ref } from "vue";
-import { FlowChart } from "@silker/flowchart";
-import type { FlowData, ShapeKind } from "@silker/flowchart";
+import { FlowChart } from "@silkor/flowchart";
+import type { FlowData, ShapeKind } from "@silkor/flowchart";
 import { initialData, noteShapes, shapeOptions } from "../lib/flowchart";
 import {
   DEFAULT_DOC_NAME,

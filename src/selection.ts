@@ -1,4 +1,4 @@
-import type { SelectionCapability } from "@silker/core";
+import type { SelectionCapability } from "@silkor/core";
 import { FlowEdge } from "./FlowEdge";
 import { Shape } from "./Shape";
 import { unionBounds } from "./geometry";

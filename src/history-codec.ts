@@ -11,8 +11,8 @@
 //
 // 复合命令（core 的 composite kind）在此解码为 compose(...)，子命令递归走本解码器。
 // 解码失败的命令返回 null：importJSON 收到 null 即整体放弃导入且不改动栈。
-import { compose } from "@silker/core";
-import type { App, HistoryCommand, SerializedCommand } from "@silker/core";
+import { compose } from "@silkor/core";
+import type { App, HistoryCommand, SerializedCommand } from "@silkor/core";
 import { FlowEdge } from "./FlowEdge";
 import type { PortDir } from "./FlowEdge";
 import type { Shape } from "./Shape";

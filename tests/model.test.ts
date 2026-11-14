@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { App, Node } from "@silker/core";
+import type { App, Node } from "@silkor/core";
 import { FlowEdge } from "../src/FlowEdge";
 import { Shape } from "../src/Shape";
 import type { FlowModelDeps } from "../src/model";

@@ -1,5 +1,5 @@
-import { Edge, Text, pointsBounds } from '@silker/core'
-import type { Bounds, EdgePoint } from '@silker/core'
+import { Edge, Text, pointsBounds } from '@silkor/core'
+import type { Bounds, EdgePoint } from '@silkor/core'
 import type { EdgeRouterCapability } from './edge-router'
 import type { Shape } from './Shape'
 

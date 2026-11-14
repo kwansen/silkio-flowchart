@@ -1,5 +1,5 @@
-import { capabilityKey } from "@silker/core";
-import type { App, Plugin } from "@silker/core";
+import { capabilityKey } from "@silkor/core";
+import type { App, Plugin } from "@silkor/core";
 import type { Shape, ShapeOptions } from "./Shape";
 import {
   RectShape,

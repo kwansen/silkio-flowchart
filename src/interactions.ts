@@ -1,8 +1,8 @@
-import { App, EdgePan } from "@silker/core";
-import type { HistoryCapability } from "@silker/core";
-import { POINTER_CAPABILITY } from "@silker/core";
-import type { SelectionCapability } from "@silker/core";
-import type { TextEditorCapability } from "@silker/core";
+import { App, EdgePan } from "@silkor/core";
+import type { HistoryCapability } from "@silkor/core";
+import { POINTER_CAPABILITY } from "@silkor/core";
+import type { SelectionCapability } from "@silkor/core";
+import type { TextEditorCapability } from "@silkor/core";
 import { FlowEdge, PORT_STUB } from "./FlowEdge";
 import type { PortDir } from "./FlowEdge";
 import { LinkPreview } from "./overlay";

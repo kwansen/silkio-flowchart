@@ -1,7 +1,7 @@
 // 画布覆盖层：连线拖拽预览与选中态渲染——只负责"画"，交互状态由 FlowChart
 // 经 getState 回调按帧提供，覆盖层自身不持有交互状态
 
-import { Node } from "@silker/core";
+import { Node } from "@silkor/core";
 import { PORT_DIR_VEC, PORT_STUB } from "./FlowEdge";
 import type { PortDir } from "./FlowEdge";
 import type { EdgeRouterCapability } from "./edge-router";

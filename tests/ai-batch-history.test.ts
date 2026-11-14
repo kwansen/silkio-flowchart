@@ -2,7 +2,7 @@
 // 全部增量命令合并为一条 "ai" 组合命令入栈，一次 undo 整体回退（与 mindmap
 // ai-controller 同一语义）。用原型桩注入最小协作对象，避开 DOM 依赖。
 import { describe, expect, it } from "vitest";
-import type { HistoryCapability, HistoryCommand } from "@silker/core";
+import type { HistoryCapability, HistoryCommand } from "@silkor/core";
 import { FlowChart } from "../src/flowchart";
 import { FlowEdge } from "../src/FlowEdge";
 import type { PortDir } from "../src/FlowEdge";

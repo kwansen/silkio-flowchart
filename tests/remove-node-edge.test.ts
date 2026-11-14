@@ -2,7 +2,7 @@
 // 连带关联连线」「只删一条连线」的捕获/恢复语义与可逆命令。Shape/FlowEdge 用
 // 原型桩，避开 Text 的 DOM 文本测量。
 import { describe, expect, it } from "vitest";
-import type { HistoryCapability, HistoryCommand } from "@silker/core";
+import type { HistoryCapability, HistoryCommand } from "@silkor/core";
 import { FlowChart } from "../src/flowchart";
 import { FlowEdge } from "../src/FlowEdge";
 import type { PortDir } from "../src/FlowEdge";

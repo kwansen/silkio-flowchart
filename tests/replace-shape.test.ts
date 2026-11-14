@@ -2,7 +2,7 @@
 // 保留 id/位置/尺寸/文字、一条可逆命令，以及无变化/找不到节点不记命令。
 // Shape 用原型桩，避开 Text 的 DOM 文本测量。
 import { describe, expect, it } from "vitest";
-import type { HistoryCapability, HistoryCommand } from "@silker/core";
+import type { HistoryCapability, HistoryCommand } from "@silkor/core";
 import { FlowChart } from "../src/flowchart";
 import { Shape } from "../src/Shape";
 

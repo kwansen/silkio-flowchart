@@ -1,5 +1,5 @@
-import { Node, Text } from '@silker/core'
-import type { NodeOptions } from '@silker/core'
+import { Node, Text } from '@silkor/core'
+import type { NodeOptions } from '@silkor/core'
 import { PORT_STUB } from './FlowEdge'
 import type { ShapeKind } from './data'
 

@@ -1,5 +1,5 @@
 // AI 侧边栏共享的数据模型与小工具（纯 TS，无 DOM 事件绑定）
-import type { AIFlowStep } from "@silker/flowchart";
+import type { AIFlowStep } from "@silkor/flowchart";
 
 export interface AIConfig {
   baseURL: string;
