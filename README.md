@@ -2,8 +2,6 @@
 
 基于 [silkor](../) 画布内核的 流程图 场景包，包名 `silkio-flowchart`。
 
-三个开源仓各司其职：`silkor` 提供内核与官方插件，`mindmap` 与 `flowchart` 是两个互不依赖的场景实现。本仓不依赖 `mindmap`。
-
 ## 安装
 
 ```sh
