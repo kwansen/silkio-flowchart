@@ -132,6 +132,8 @@ export class FlowChart {
   private clipboard: ClipboardCapability | null;
   // 连续粘贴错开计数（复制时归零）：多次粘贴逐次偏移，避免完全重叠
   private pasteCount = 0;
+  // 选中变化订阅（onSelectionChange 注册）：宿主据此刷新工具条可用态等外部 UI
+  private selectionListeners = new Set<(hasShape: boolean) => void>();
 
   constructor(private options: FlowChartOptions) {
     this.onChange = options.onChange;
@@ -344,6 +346,11 @@ export class FlowChart {
         this.editing.deactivate();
         this.app.requestRender();
       }
+    };
+    // 选中变化分发（能力单槽回调 → 多路订阅）：hasShape 表示当前是否选中了形状
+    selection.onChange = () => {
+      const has = selShapesOf(selection).length > 0;
+      for (const cb of this.selectionListeners) cb(has);
     };
     return selection;
   }
@@ -1491,6 +1498,21 @@ export class FlowChart {
 
   get canRedo(): boolean {
     return this.history.canRedo;
+  }
+
+  // 是否选中了形状（选中连线或无选中时为 false）：替换形状等动作的可用前提
+  get hasShapeSelection(): boolean {
+    return selShapesOf(this.sel).length > 0;
+  }
+
+  // 订阅选中变化（参数为"当前是否选中了形状"，注册时先回调一次当前值），
+  // 返回退订函数
+  onSelectionChange(cb: (hasShapeSelection: boolean) => void): () => void {
+    this.selectionListeners.add(cb);
+    cb(this.hasShapeSelection);
+    return () => {
+      this.selectionListeners.delete(cb);
+    };
   }
 
   // 完整拆卸（幂等，页面级销毁或显式装配下重建场景用）：

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 胶囊工具条：撤销/重做、添加/替换形状、剪贴板、适应视图、导出、缩放。
 // 悬浮面板（hover intent）是纯 UI 状态，画布动作全部 emit 给宿主组件。
-import { computed, onUnmounted, ref } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import type { ShapeKind } from "silkio-flowchart";
 import type { ShapeOption } from "../lib/flowchart";
 import Icon from "./Icon.vue";
@@ -9,6 +9,7 @@ import Icon from "./Icon.vue";
 const props = defineProps<{
   canUndo: boolean;
   canRedo: boolean;
+  hasShapeSelection: boolean;
   zoom: number;
   copied: boolean;
   aiSidebarOpen: boolean;
@@ -55,6 +56,14 @@ function toggleMenu(id: MenuId) {
   if (!wasOpen) showMenu(id);
 }
 onUnmounted(closeMenu);
+
+// 选中被清空（点画布空白、undo/redo 等）时收起替换面板，避免面板开着却不可用
+watch(
+  () => props.hasShapeSelection,
+  (has) => {
+    if (!has) closeMenu();
+  },
+);
 
 function pickAdd(opt: ShapeOption) {
   emit("add-shape", opt.kind, opt.text);
@@ -137,13 +146,18 @@ const menuItemClass =
       </div>
     </div>
 
-    <!-- 替换选中节点形状 -->
-    <div class="relative" @mouseenter="scheduleMenu('replace')" @mouseleave="closeMenu">
+    <!-- 替换选中节点形状：无选中形状时禁用（与撤销/重做同一禁用样式） -->
+    <div
+      class="relative"
+      @mouseenter="hasShapeSelection && scheduleMenu('replace')"
+      @mouseleave="closeMenu"
+    >
       <button
         :class="btnClass"
+        :disabled="!hasShapeSelection"
         title="替换选中节点形状"
         aria-label="替换选中节点形状"
-        @click="toggleMenu('replace')"
+        @click="hasShapeSelection && toggleMenu('replace')"
       >
         <Icon name="i-swap" />
       </button>

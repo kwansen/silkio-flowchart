@@ -24,11 +24,13 @@ const canvasRef = ref<HTMLCanvasElement | null>(null);
 const initialized = ref(false);
 const canUndo = ref(false);
 const canRedo = ref(false);
+const hasSelShape = ref(false);
 const zoom = ref(100);
 const copied = ref(false);
 
 let flowchart: FlowChart | null = null;
 let offViewportChange: (() => void) | null = null;
+let offSelectionChange: (() => void) | null = null;
 
 const {
   messages,
@@ -168,6 +170,9 @@ function mountScene(data: FlowData) {
     });
     // 构造器下一帧先居中，随后适应视图覆盖居中（同帧内按注册顺序执行）
     requestAnimationFrame(() => fitScene());
+    // 选中变化 → 刷新替换形状按钮可用态（注册时先回调一次当前值）
+    offSelectionChange =
+      flowchart.onSelectionChange((has) => (hasSelShape.value = has)) ?? null;
   } else {
     suppressSave = true;
     flowchart.setData(data);
@@ -377,6 +382,8 @@ onUnmounted(() => {
   void flushSave();
   offViewportChange?.();
   offViewportChange = null;
+  offSelectionChange?.();
+  offSelectionChange = null;
   // 完整拆卸：门面自建宿主上的官方插件随场景一并卸载
   flowchart?.destroy();
   flowchart = null;
@@ -408,6 +415,7 @@ onUnmounted(() => {
       <FlowChartToolbar
         :can-undo="canUndo"
         :can-redo="canRedo"
+        :has-shape-selection="hasSelShape"
         :zoom="zoom"
         :copied="copied"
         :ai-sidebar-open="sidebarOpen"

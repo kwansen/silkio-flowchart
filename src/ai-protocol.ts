@@ -749,8 +749,9 @@ export function parseAIFlowResponse(
 // ---- 默认提示词 ----
 
 // AI 生成提示词模板：把请求渲染为大模型可直接使用的指令。核心约束是
-// 「禁止输出任何几何字段」——坐标与端口方向由程序布局器计算，模型只需描述
-// 流程语义；对话类能力（撤销/重做/查历史/看选中）以操作形式表达，由程序执行。
+// 「禁止输出任何几何字段」——坐标由程序布局器计算；每条边的出入端口方向
+// 由模型在 edges[].fromDir/toDir 中明确给出（按绘图规则选边）；
+// 对话类能力（撤销/重做/查历史/看选中）以操作形式表达，由程序执行。
 // 宿主可自行替换提示词，只需遵守上面的语义图与操作协议。
 export function defaultAIFlowPrompt(req: AIFlowEditRequest): string {
   const { selection, historyState } = req;
@@ -758,7 +759,7 @@ export function defaultAIFlowPrompt(req: AIFlowEditRequest): string {
   return [
     "你是流程图助手。需要生成或修改流程图、撤销/重做、查看历史时，只输出一个 JSON 对象，不要输出解释文字，不要用代码块包裹。",
     "输出格式（按指令选择一种）：",
-    '1. 改图：{"ops":[{"op":"render","graph":{"nodes":[{"id":"n1","shape":"ellipse","text":"开始"},{"id":"n2","shape":"diamond","text":"校验通过？"}],"edges":[{"from":"n1","to":"n2"},{"from":"n2","to":"n3","text":"是","fromDir":"right"}]}}]}',
+    '1. 改图：{"ops":[{"op":"render","graph":{"nodes":[{"id":"n1","shape":"ellipse","text":"开始"},{"id":"n2","shape":"diamond","text":"校验通过？"}],"edges":[{"from":"n1","to":"n2","fromDir":"bottom","toDir":"top"},{"from":"n2","to":"n3","text":"是","fromDir":"right","toDir":"left"}]}}]}',
     '   也可以直接输出语义图 {"nodes":[...],"edges":[...]}（等价于一条 render 操作）。',
     '2. 撤销 / 重做：{"ops":[{"op":"undo"}]} 或 {"ops":[{"op":"redo"}]}；可连写多次表示连续撤销/重做，但不能与改图操作写在同一批。',
     '3. 查看历史：{"ops":[{"op":"history"}]}（只读，程序会把可撤销/可重做的变更列表并入回答）。',
@@ -793,7 +794,7 @@ export function defaultAIFlowPrompt(req: AIFlowEditRequest): string {
     "- nodes[].shape：只允许 rect（步骤）、diamond（判断）、ellipse（开始/结束）、parallelogram（输入/输出）、hexagon（准备）、database（存储）。也可以用 role 字段代替（start/end/decision/io/process/data），程序会自动推断形状。",
     "- nodes[].text：节点文字，简短；判断节点写成问句。允许 text 为空字符串（画布上存在无文字的节点，原样保留即可，不要替它虚构文字）。",
     "- edges[].from / edges[].to：必须是 nodes 中存在的 id。edges[].text 只写分支短标签（是/否、通过/驳回、超时等），普通连线省略。",
-    "- edges[].fromDir / edges[].toDir（可选）：固定这条线从起点哪一侧出（fromDir）与进入终点哪一侧（toDir），取值 top / bottom / left / right。判断节点想固定分支走向（如「是」从右出、「否」从下出）、或用户明确说了出入方向时给出；省略则由程序按布局自动选边。修改现有图时，下方「当前流程图」的边上带有 fromDir/toDir（即当前实际走向）：未变更的边必须原样带上这两个字段，只有走向需要变化的边才修改它们。",
+    "- edges[].fromDir / edges[].toDir（必填）：每条边必须写明从起点哪一侧出（fromDir）与进入终点哪一侧（toDir），取值 top / bottom / left / right。选边规则：默认流程自上而下，普通出边用 bottom、入边用 top；判断节点等多条出边要分散到不同侧（如「是」right「否」bottom，或左右各一）；循环/回退边从侧面出侧面回（fromDir 与 toDir 用同一侧，如 right / right）；用户明确说了出入方向时按用户说的。修改现有图时，下方「当前流程图」的边上带有 fromDir/toDir（即当前实际走向）：未变更的边必须原样带上这两个字段，只有走向需要变化的边才修改它们。",
     "严格禁止输出 x、y、width、height、坐标、位置等几何字段：布局与坐标由程序自动计算，输出这些字段会导致生成失败。端口方向只允许出现在 edges[].fromDir/toDir 与 updateEdge 操作中，其余位置一律不要输出。",
     "绘图规则：",
     "- 有且仅有一个开始节点；判断节点的每条出边都要写分支标签；流程要能走到结束节点。",
