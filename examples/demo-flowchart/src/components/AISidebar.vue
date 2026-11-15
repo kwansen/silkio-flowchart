@@ -6,6 +6,8 @@ import { isOpsStream } from "../lib/ai";
 import type { AIConfig, ChatMessage, PendingReply } from "../lib/ai";
 import Icon from "./Icon.vue";
 import Markdown from "./Markdown.vue";
+import { OverlayScrollbarsComponent } from "overlayscrollbars-vue";
+import type { OverlayScrollbarsComponentRef } from "overlayscrollbars-vue";
 
 const props = defineProps<{
   messages: ChatMessage[];
@@ -60,13 +62,17 @@ const pendingStatus = computed(() => {
   return p.reasoning ? "思考中…" : "等待响应…";
 });
 
-// 新消息或流式增量后，消息流自动跟随到底部
-const chatBox = ref<HTMLDivElement | null>(null);
+// 新消息或流式增量后，消息流自动跟随到底部（viewport 元素经组件实例获取）
+const chatBox = ref<OverlayScrollbarsComponentRef | null>(null);
+// OverlayScrollbars 统一配置：滚动/悬浮时显示、静止后自动隐藏
+const osOptions = {
+  scrollbars: { autoHide: "move" as const, autoHideDelay: 500 },
+};
 watch(
   () => [props.messages, props.pending] as const,
   () => {
-    const box = chatBox.value;
-    if (box) box.scrollTop = box.scrollHeight;
+    const viewport = chatBox.value?.osInstance()?.elements().viewport;
+    if (viewport) viewport.scrollTop = viewport.scrollHeight;
   },
   { deep: true, flush: "post" },
 );
@@ -169,12 +175,15 @@ function onKeydown(event: KeyboardEvent) {
       </div>
     </div>
 
-    <!-- 消息流 -->
-    <div
+    <!-- 消息流：OverlayScrollbars 自定义滚动条，内部包装层承载原布局 -->
+    <OverlayScrollbarsComponent
       id="chat-box"
       ref="chatBox"
-      class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-200"
+      element="div"
+      class="flex min-h-0 flex-1"
+      :options="osOptions"
     >
+      <div class="flex flex-col gap-3 p-3">
       <div
         v-if="!messages.length && !pending"
         id="ai-empty"
@@ -256,7 +265,8 @@ function onKeydown(event: KeyboardEvent) {
           <span>{{ pendingStatus }}</span>
         </div>
       </div>
-    </div>
+      </div>
+    </OverlayScrollbarsComponent>
 
     <!-- 输入区 -->
     <div class="flex items-center gap-2 border-t border-gray-100 p-2.5">

@@ -5,6 +5,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { DEFAULT_DOC_NAME, type FlowChartDoc } from "../lib/idb";
 import Icon from "./Icon.vue";
+import { OverlayScrollbarsComponent } from "overlayscrollbars-vue";
 
 const props = defineProps<{
   docs: FlowChartDoc[];
@@ -20,6 +21,10 @@ const emit = defineEmits<{
 }>();
 
 const dialogOpen = ref(false);
+// OverlayScrollbars 统一配置：滚动/悬浮时显示、静止后自动隐藏
+const osOptions = {
+  scrollbars: { autoHide: "move" as const, autoHideDelay: 500 },
+};
 const sortKey = ref<"createdAt" | "updatedAt">("updatedAt");
 const sortAsc = ref(false);
 const sortedDocs = computed(() => {
@@ -221,10 +226,13 @@ function formatTime(ts: number) {
             </div>
           </div>
 
-          <!-- 流程图列表 -->
-          <div
-            class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2.5 py-2.5"
+          <!-- 流程图列表：OverlayScrollbars 自定义滚动条 -->
+          <OverlayScrollbarsComponent
+            element="div"
+            class="flex min-h-0 flex-1"
+            :options="osOptions"
           >
+            <div class="flex flex-col gap-1 px-2.5 py-2.5">
             <div
               v-for="d in sortedDocs"
               :key="d.id"
@@ -279,7 +287,8 @@ function formatTime(ts: number) {
               />
               <div class="text-xs text-gray-400">还没有流程图，点击下方按钮新建</div>
             </div>
-          </div>
+            </div>
+          </OverlayScrollbarsComponent>
 
           <!-- 底部：新建 -->
           <div class="border-t border-gray-100 p-3">

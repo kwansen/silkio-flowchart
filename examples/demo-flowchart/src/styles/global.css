@@ -1,4 +1,13 @@
 @import "tailwindcss";
+@import "overlayscrollbars/overlayscrollbars.css";
+
+/* OverlayScrollbars 细滚动条：贴合 demo 的浅灰视觉（与主题类同优先级才能覆盖变量） */
+.os-theme-dark.os-scrollbar {
+  --os-size: 8px;
+  --os-handle-bg: #d1d5db;
+  --os-handle-bg-hover: #9ca3af;
+  --os-handle-bg-active: #6b7280;
+}
 
 /* 组件样式统一写在 class 里（不使用 @apply）。Tailwind preflight 会重置
    标题/列表/代码块等默认样式，而 comark 生成的 Markdown 标签不带类名，
