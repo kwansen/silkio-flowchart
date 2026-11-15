@@ -184,28 +184,10 @@ function formatTime(ts: number) {
           role="dialog"
           aria-label="流程图列表"
         >
-          <!-- 头部：标题 + 数量徽标 + 关闭 -->
+          <!-- 头部：排序切换 + 关闭 -->
           <div
-            class="flex items-center gap-2 border-b border-gray-100 px-5 py-3.5"
+            class="flex items-center gap-2 border-b border-gray-100 px-4 py-3"
           >
-            <span class="text-sm font-semibold text-gray-900">我的流程图</span>
-            <span
-              class="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] leading-4 text-gray-500"
-            >
-              {{ sortedDocs.length }}
-            </span>
-            <button
-              class="ml-auto flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
-              title="关闭"
-              aria-label="关闭"
-              @click="dialogOpen = false"
-            >
-              <Icon name="i-close" size="h-3.5 w-3.5" />
-            </button>
-          </div>
-
-          <!-- 排序：分段控件，点击切换升降序 -->
-          <div class="px-4 pt-3">
             <div class="inline-flex items-center rounded-lg bg-gray-100 p-0.5">
               <button
                 v-for="key in ['createdAt', 'updatedAt'] as const"
@@ -224,6 +206,14 @@ function formatTime(ts: number) {
                 }}</span>
               </button>
             </div>
+            <button
+              class="ml-auto flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+              title="关闭"
+              aria-label="关闭"
+              @click="dialogOpen = false"
+            >
+              <Icon name="i-close" size="h-3.5 w-3.5" />
+            </button>
           </div>
 
           <!-- 流程图列表：OverlayScrollbars 自定义滚动条 -->
@@ -285,21 +275,11 @@ function formatTime(ts: number) {
                 size="h-8 w-8"
                 class="mx-auto mb-2 text-gray-200"
               />
-              <div class="text-xs text-gray-400">还没有流程图，点击下方按钮新建</div>
+              <div class="text-xs text-gray-400">还没有流程图，点击左上角「+」新建</div>
             </div>
             </div>
           </OverlayScrollbarsComponent>
 
-          <!-- 底部：新建 -->
-          <div class="border-t border-gray-100 p-3">
-            <button
-              class="flex h-9 w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg bg-violet-500 text-xs font-medium text-white transition-colors hover:bg-violet-600"
-              @click="createDoc"
-            >
-              <Icon name="i-plus" size="h-3.5 w-3.5" />
-              新建流程图
-            </button>
-          </div>
         </div>
       </div>
     </Transition>

@@ -189,7 +189,7 @@ function onKeydown(event: KeyboardEvent) {
         id="ai-empty"
         class="mt-10 text-center text-xs leading-[1.9] text-gray-400"
       >
-        输入指令生成或修改流程，如：<br />画一个用户注册审批流程，包含验证码校验和失败重试<br />把「校验通过？」改成「是否为管理员」<br />在末尾加一个「发送通知」节点<br />我选中了什么 / 撤销上一步 / 最近改了什么
+        输入指令，如：画一个注册流程 / 撤销上一步
       </div>
 
       <div v-for="m in messages" :key="m.id">
