@@ -1,6 +1,6 @@
 {
   "$schema": "https://unpkg.com/@changesets/config@3.1.4/schema.json",
-  "changelog": ["@changesets/changelog-github", { "repo": "kwansen/flowchart" }],
+  "changelog": ["@changesets/changelog-github", { "repo": "kwansen/silkio-flowchart" }],
   "commit": false,
   "fixed": [],
   "linked": [],
